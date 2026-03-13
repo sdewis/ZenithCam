@@ -1,0 +1,7 @@
+#!/bin/bash
+# ZenithCam System Launcher
+
+# Reset Virtual Camera Module (requires sudo usually, but we assume user is in group or it's handled in postinst)
+# We use the existing start_cam.sh logic or just call it.
+cd /opt/zenithcam
+./start_cam.sh

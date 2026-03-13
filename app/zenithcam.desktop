@@ -1,0 +1,10 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Name=ZenithCam
+Comment=AI-Powered PTZ Tracking and Streaming
+Exec=/usr/bin/zenithcam
+Icon=/opt/zenithcam/icon.png
+Terminal=false
+Type=Application
+Categories=Video;Graphics;
+Keywords=Camera;AI;Tracking;NSFW;

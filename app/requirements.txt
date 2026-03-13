@@ -1,0 +1,15 @@
+opencv-python
+numpy
+psutil
+py-cpuinfo
+onnxruntime
+moderngl
+pyfakewebcam
+ultralytics
+requests
+tqdm
+PyOpenGL
+glfw
+moderngl-window
+PyQt6
+mediapipe
