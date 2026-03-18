@@ -25,7 +25,7 @@ class PTZCamera:
         self.Q[4:, 4:] *= 0.1 # Velocity noise
         
         # Measurement Noise
-        self.R = np.eye(4) * 2.0
+        self.R = np.eye(4) * 5.0  # Increased for smoother bounding box tracking
         
         # Transition Matrix (Constant Velocity)
         self.F = np.eye(8)
@@ -35,9 +35,21 @@ class PTZCamera:
         self.H = np.zeros((4, 8))
         self.H[:4, :4] = np.eye(4)
         
-        self.margin_percentage = 0.20
+        self.margin_percentage = 0.25
         self.smoothing_factor = smoothing_factor
+        self.manual_mode = False
+        self.manual_center_x = source_w / 2.0
+        self.manual_center_y = source_h / 2.0
+        self.manual_zoom = 1.0  # 1.0 = full width, 2.0 = half width
         logger.info(f"PTZ Camera initialized: {source_w}x{source_h} with Kalman Filter")
+
+    def set_manual_center(self, target_x, target_y):
+        self.manual_mode = True
+        self.manual_center_x = target_x
+        self.manual_center_y = target_y
+        
+    def adjust_zoom(self, delta):
+        self.manual_zoom = max(1.0, min(10.0, self.manual_zoom + delta))
 
     def update(self, target_boxes):
         """
@@ -58,7 +70,16 @@ class PTZCamera:
             self.no_detection_counter = 0
             self.last_valid_z = np.array([0.0, 0.0, float(self.source_w), float(self.source_h)])
             
-        if not target_boxes:
+        if self.manual_mode:
+            target_w = self.source_w / self.manual_zoom
+            target_h = target_w / self.aspect_ratio
+            
+            target_x = np.clip(self.manual_center_x - target_w / 2.0, 0, self.source_w - target_w)
+            target_y = np.clip(self.manual_center_y - target_h / 2.0, 0, self.source_h - target_h)
+            
+            z = np.array([target_x, target_y, target_w, target_h])
+            self.last_valid_z = z
+        elif not target_boxes:
             self.no_detection_counter += 1
             if self.no_detection_counter > 60: # Approx 1 second at 60 FPS
                 z = np.array([0.0, 0.0, float(self.source_w), float(self.source_h)])

@@ -29,10 +29,10 @@ However, in `toggle_tracking`, the code checks `if self.thread and self.thread.i
 ## 📋 TODO for AntiGravity
 
 ### Immediate Fixes
-- [ ] **Fix `toggle_tracking` Race Condition**: Refactor `toggle_tracking` and `_on_worker_finished` to use thread-safe state flags instead of directly querying `self.thread.isRunning()`, which is prone to `NoneType` errors when the thread is being torn down.
-- [ ] **Fix `closeEvent` Crash**: Ensure `closeEvent` gracefully waits for the `HardwareManager` to close all file descriptors without trying to call methods on a potentially `None` `self.thread`.
-- [ ] **Verify `pyfakewebcam` Cleanup**: Ensure `HardwareManager.close_output()` is successfully releasing the `os.open` file descriptor for `/dev/video20` so that subsequent starts don't hit the `[Errno 22] Invalid argument` block.
+- [x] **Fix `toggle_tracking` Race Condition**: Refactor `toggle_tracking` and `_on_worker_finished` to use thread-safe state flags instead of directly querying `self.thread.isRunning()`, which is prone to `NoneType` errors when the thread is being torn down.
+- [x] **Fix `closeEvent` Crash**: Ensure `closeEvent` gracefully waits for the `HardwareManager` to close all file descriptors without trying to call methods on a potentially `None` `self.thread`.
+- [x] **Verify `pyfakewebcam` Cleanup**: Ensure `HardwareManager.close_output()` is successfully releasing the `os.open` file descriptor for `/dev/video20` so that subsequent starts don't hit the `[Errno 22] Invalid argument` block.
 
 ### Next Steps / Refinements
-- [ ] **Verify Hardware Render Consistency**: Ensure ModernGL context destruction (`ctx.release()`) is completely clean between stop/start cycles.
-- [ ] **SDK Initialization UX**: Ensure the UI smoothly handles the OBSBOT SDK taking a few seconds to connect, providing clear visual feedback rather than freezing or logging silent errors.
+- [x] **Verify Hardware Render Consistency**: Ensure ModernGL context destruction (`ctx.release()`) is completely clean between stop/start cycles.
+- [x] **SDK Initialization UX**: Ensure the UI smoothly handles the OBSBOT SDK taking a few seconds to connect, providing clear visual feedback rather than freezing or logging silent errors.

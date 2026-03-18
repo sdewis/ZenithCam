@@ -157,8 +157,8 @@ QGroupBox {
     border: 1px solid #333; border-radius: 8px; margin-top: 18px; background-color: rgba(40, 40, 45, 100);
 }
 QGroupBox::title {
-    #00E676; font-weight: bold; font-size: 15px;
-    subcontrol-origin: margin; subcontrol-position: top left; padding: 0 8px; color:
+    color: #00E676; font-weight: bold; font-size: 15px;
+    subcontrol-origin: margin; subcontrol-position: top left; padding: 0 8px;
 }
 QComboBox, QSpinBox, QTextEdit, QLineEdit, QListWidget {
     background-color: #1E1E24; border: 1px solid #444; border-radius: 6px; padding: 8px; color: #FFFFFF;
@@ -204,6 +204,55 @@ class PresetButton(QPushButton):
         elif event.button() == Qt.MouseButton.RightButton:
             self.right_clicked.emit()
         super().mousePressEvent(event)
+
+
+class ObsbotConnectThread(QThread):
+    finished = Signal(bool)
+
+    def __init__(self, obsbot, reconnect=False):
+        super().__init__()
+        self.obsbot = obsbot
+        self.reconnect = reconnect
+
+    def run(self):
+        if self.reconnect:
+            self.obsbot.disconnect()
+            success = self.obsbot.connect()
+        else:
+            success = self.obsbot.init() and self.obsbot.connect()
+        self.finished.emit(bool(success))
+
+
+class ClickableVideoLabel(QLabel):
+    single_clicked = Signal(int, int)
+    double_clicked = Signal(int, int)
+    right_clicked = Signal(int, int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.click_timer = QTimer(self)
+        self.click_timer.setSingleShot(True)
+        self.click_timer.setInterval(250)  # 250ms debounce for double click
+        self.click_timer.timeout.connect(self._emit_single_click)
+        self.last_click_pos = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.last_click_pos = (event.position().x(), event.position().y())
+            self.click_timer.start()
+        elif event.button() == Qt.MouseButton.RightButton:
+            self.right_clicked.emit(int(event.position().x()), int(event.position().y()))
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.click_timer.stop()  # Cancel single click
+            self.double_clicked.emit(int(event.position().x()), int(event.position().y()))
+        super().mouseDoubleClickEvent(event)
+
+    def _emit_single_click(self):
+        if self.last_click_pos:
+            self.single_clicked.emit(int(self.last_click_pos[0]), int(self.last_click_pos[1]))
 
 
 class HardwareManager:
@@ -319,6 +368,23 @@ class ZenithWorker(QObject):
         self._last_zoom = 1.0
         self._last_led = None
         self.frame_count = 0
+        self.last_crop_rect = None
+
+    def handle_click(self, lx, ly, lw, lh, action):
+        if not self.ptz or not self.last_crop_rect: return
+        cx, cy, cw, ch = self.last_crop_rect
+        # Map label click to source image coordinates
+        source_x = cx + (lx / lw) * cw
+        source_y = cy + (ly / lh) * ch
+
+        if action == "single":
+            self.ptz.set_manual_center(source_x, source_y)
+        elif action == "zoom_in":
+            self.ptz.adjust_zoom(0.5)
+        elif action == "zoom_out":
+            self.ptz.adjust_zoom(-0.5)
+        elif action == "resume":
+            self.ptz.manual_mode = False
 
     @Slot()
     def process(self):
@@ -425,6 +491,7 @@ class ZenithWorker(QObject):
 
             zoom_boxes, blur_boxes = self.ml_pipeline.process_frame(frame)
             crop_rect = self.ptz.update(zoom_boxes)
+            self.last_crop_rect = crop_rect
 
             # SDK Interaction
             obs = p['obsbot']
@@ -598,6 +665,21 @@ class MainWindow(QMainWindow):
         settings_container = QWidget()
         settings_layout = QVBoxLayout(settings_container)
 
+        preset_group = QGroupBox("Presets / Tags")
+        preset_layout = QHBoxLayout(preset_group)
+        self.preset_combo = QComboBox()
+        self.preset_combo.setEditable(True)
+        self.preset_combo.lineEdit().setPlaceholderText("Enter tag name...")
+        self.preset_combo.currentIndexChanged.connect(self.on_preset_selected)
+        btn_save_preset = QPushButton("Save")
+        btn_save_preset.clicked.connect(self.save_current_preset)
+        btn_del_preset = QPushButton("Del")
+        btn_del_preset.clicked.connect(self.delete_current_preset)
+        preset_layout.addWidget(self.preset_combo, stretch=1)
+        preset_layout.addWidget(btn_save_preset)
+        preset_layout.addWidget(btn_del_preset)
+        settings_layout.addWidget(preset_group)
+
         conf_group = QGroupBox("Device Settings")
         group_layout = QVBoxLayout(conf_group)
 
@@ -693,9 +775,12 @@ class MainWindow(QMainWindow):
         self.output_preview_dock.setObjectName("OutputPreviewDock")
         self.output_preview_group = QGroupBox()
         out_l = QVBoxLayout(self.output_preview_group)
-        self.output_preview_label = QLabel("Waiting for AI processing...")
+        self.output_preview_label = ClickableVideoLabel("Waiting for AI processing...")
         self.output_preview_label.setMinimumSize(1, 1)
         self.output_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.output_preview_label.single_clicked.connect(self.on_output_single_click)
+        self.output_preview_label.double_clicked.connect(self.on_output_double_click)
+        self.output_preview_label.right_clicked.connect(self.on_output_right_click)
         out_l.addWidget(self.output_preview_label)
         self.output_preview_dock.setWidget(self.output_preview_group)
         self.splitDockWidget(self.input_preview_dock,
@@ -1016,7 +1101,129 @@ class MainWindow(QMainWindow):
         self.move_data = {"pan": 0, "tilt": 0, "zoom": 0, "start_time": 0}
         qt_handler.emitter.log_signal.connect(self.append_log)
         self.init_tray()
+        
+        self.app_settings_file = os.path.join(os.path.dirname(__file__), "settings.json")
+        self.app_settings = {}
+        self.load_app_settings()
+        
         global_logger.info("Application initialized.")
+
+    def load_app_settings(self):
+        try:
+            if os.path.exists(self.app_settings_file):
+                with open(self.app_settings_file, 'r') as f:
+                    self.app_settings = json.load(f)
+            else:
+                self.app_settings = {"default": self.params.copy()}
+                
+            self.preset_combo.blockSignals(True)
+            self.preset_combo.clear()
+            self.preset_combo.addItems(self.app_settings.keys())
+            self.preset_combo.blockSignals(False)
+            
+            # Load default or first available if no default
+            tag_to_load = "default" if "default" in self.app_settings else list(self.app_settings.keys())[0]
+            self.preset_combo.setCurrentText(tag_to_load)
+            self.on_preset_selected(tag_to_load)
+        except Exception as e:
+            global_logger.error(f"Failed to load settings: {e}")
+
+    def save_current_preset(self):
+        tag = self.preset_combo.currentText().strip()
+        if not tag:
+            tag = "default"
+        
+        # Build current settings dict
+        current_settings = {
+            'input_source': self.input_spin.value(),
+            'output_device': self.output_edit.currentText(),
+            'model_path': self.params.get('model_path', ""),
+            'target_class_ids': self.params.get('target_class_ids', []),
+            'blur_class_ids': self.params.get('blur_class_ids', []),
+            'smooth_factor': self.smooth_slider.value() / 100.0,
+            'zoom_margin': self.margin_spin.value(),
+            'enable_physical_ptz': self.ptz_cb.isChecked(),
+            'enable_onboard_tracker': self.onboard_tracker_cb.isChecked(),
+            'draw_preview_roi': self.preview_roi_cb.isChecked(),
+            'draw_output_roi': self.output_roi_cb.isChecked(),
+            'flip_video': self.flip_cb.isChecked()
+        }
+        
+        self.app_settings[tag] = current_settings
+        try:
+            with open(self.app_settings_file, 'w') as f:
+                json.dump(self.app_settings, f, indent=4)
+            global_logger.info(f"Saved preset: {tag}")
+            
+            # Refresh combo box
+            self.preset_combo.blockSignals(True)
+            self.preset_combo.clear()
+            self.preset_combo.addItems(self.app_settings.keys())
+            self.preset_combo.setCurrentText(tag)
+            self.preset_combo.blockSignals(False)
+        except Exception as e:
+            global_logger.error(f"Failed to save settings: {e}")
+
+    def delete_current_preset(self):
+        tag = self.preset_combo.currentText().strip()
+        if tag and tag in self.app_settings and tag != "default":
+            del self.app_settings[tag]
+            try:
+                with open(self.app_settings_file, 'w') as f:
+                    json.dump(self.app_settings, f, indent=4)
+                global_logger.info(f"Deleted preset: {tag}")
+                self.preset_combo.blockSignals(True)
+                self.preset_combo.clear()
+                self.preset_combo.addItems(self.app_settings.keys())
+                self.preset_combo.setCurrentText("default")
+                self.preset_combo.blockSignals(False)
+                self.on_preset_selected("default")
+            except Exception as e:
+                global_logger.error(f"Failed to delete preset: {e}")
+
+    def on_preset_selected(self, tag):
+        if isinstance(tag, int):
+            tag = self.preset_combo.currentText()
+            
+        if tag in self.app_settings:
+            settings = self.app_settings[tag]
+            
+            # Update UI elements
+            if 'input_source' in settings:
+                self.input_spin.setValue(settings['input_source'])
+            if 'output_device' in settings:
+                self.output_edit.setCurrentText(settings['output_device'])
+            if 'model_path' in settings:
+                self.params['model_path'] = settings['model_path']
+            if 'smooth_factor' in settings:
+                self.smooth_slider.setValue(int(settings['smooth_factor'] * 100))
+            if 'zoom_margin' in settings:
+                self.margin_spin.setValue(settings['zoom_margin'])
+            if 'enable_physical_ptz' in settings:
+                self.ptz_cb.setChecked(settings['enable_physical_ptz'])
+            if 'enable_onboard_tracker' in settings:
+                self.onboard_tracker_cb.setChecked(settings['enable_onboard_tracker'])
+            if 'draw_preview_roi' in settings:
+                self.preview_roi_cb.setChecked(settings['draw_preview_roi'])
+            if 'draw_output_roi' in settings:
+                self.output_roi_cb.setChecked(settings['draw_output_roi'])
+            if 'flip_video' in settings:
+                self.flip_cb.setChecked(settings['flip_video'])
+                
+            # We also need to restore target/blur class IDs
+            target_ids = settings.get('target_class_ids', [])
+            blur_ids = settings.get('blur_class_ids', [])
+            
+            # Update the checkboxes
+            if hasattr(self, 'class_checkboxes'):
+                for cid, cb in self.class_checkboxes:
+                    cb.setChecked(cid in target_ids)
+            if hasattr(self, 'blur_checkboxes'):
+                for cid, cb in self.blur_checkboxes:
+                    cb.setChecked(cid in blur_ids)
+                    
+            self.update_target_classes()
+            global_logger.info(f"Loaded preset: {tag}")
 
     def wrap_in_toolbar(self, widget):
         from PyQt6.QtWidgets import QToolBar
@@ -1221,15 +1428,6 @@ class MainWindow(QMainWindow):
             
             if self.worker:
                 self.worker.stop()
-            if self.thread:
-                self.thread.quit()
-                if not self.thread.wait(3000):
-                    self.thread.terminate()
-                    self.thread.wait()
-                
-            self.start_btn.setEnabled(True)
-            self.worker = None
-            self.thread = None
         else:
             self.is_tracking = True
             self.params['input_source'], self.params['output_device'] = self.input_spin.value(
@@ -1252,6 +1450,16 @@ class MainWindow(QMainWindow):
                 "background-color: #FF5252; color: white; font-weight: bold; padding: 15px; border-radius: 8px;")
 
     def _on_worker_finished(self):
+        worker = self.worker
+        thread = self.thread
+        self.worker = None
+        self.thread = None
+        
+        if worker:
+            worker.deleteLater()
+        if thread:
+            thread.deleteLater()
+
         if getattr(self, 'is_shutting_down', False):
             return
             
@@ -1280,6 +1488,44 @@ class MainWindow(QMainWindow):
             self.obsbot.set_zoom(z)
             if self.worker:
                 self.worker._last_zoom = z
+
+    @Slot(int, int)
+    def on_output_single_click(self, x, y):
+        # Stop AI Tracking by unchecking class boxes
+        self.last_active_classes = [cid for cid, cb in self.class_checkboxes if cb.isChecked()]
+        for cid, cb in self.class_checkboxes:
+            cb.setChecked(False)
+        self.update_target_classes()
+        if self.worker:
+            w = self.output_preview_label.width()
+            h = self.output_preview_label.height()
+            self.worker.handle_click(x, y, w, h, "single")
+            
+    @Slot(int, int)
+    def on_output_double_click(self, x, y):
+        # Resume last tracking settings... wait, I need to store them.
+        # If we just re-check "Person" (class 0) for now, or just resume
+        # Let's say we have a self.last_active_classes to restore
+        if hasattr(self, 'last_active_classes') and self.last_active_classes:
+            for cid, cb in self.class_checkboxes:
+                cb.setChecked(cid in self.last_active_classes)
+        else:
+            # default to person
+            if self.class_checkboxes:
+                self.class_checkboxes[0][1].setChecked(True)
+        self.update_target_classes()
+        if self.worker:
+            w = self.output_preview_label.width()
+            h = self.output_preview_label.height()
+            self.worker.handle_click(x, y, w, h, "zoom_in")
+            self.worker.handle_click(x, y, w, h, "resume")
+
+    @Slot(int, int)
+    def on_output_right_click(self, x, y):
+        if self.worker:
+            w = self.output_preview_label.width()
+            h = self.output_preview_label.height()
+            self.worker.handle_click(x, y, w, h, "zoom_out")
 
     @Slot(QImage)
     def update_image(self, qt_img):
@@ -1383,8 +1629,13 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Connecting OBSBOT...")
         if hasattr(self, 'reconnect_obsbot_btn'):
             self.reconnect_obsbot_btn.setEnabled(False)
-        QApplication.processEvents()
-        if self.obsbot.init() and self.obsbot.connect():
+            
+        self.obsbot_thread = ObsbotConnectThread(self.obsbot, reconnect=False)
+        self.obsbot_thread.finished.connect(self._on_obsbot_init_finished)
+        self.obsbot_thread.start()
+
+    def _on_obsbot_init_finished(self, success):
+        if success:
             global_logger.info("Connected to OBSBOT SDK")
             self.obsbot.set_ai_mode(0)
             self.status_label.setText("Status: Idle (OBSBOT Ready)")
@@ -1393,20 +1644,28 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Status: Idle (OBSBOT Offline)")
         if hasattr(self, 'reconnect_obsbot_btn'):
             self.reconnect_obsbot_btn.setEnabled(True)
+        self.obsbot_thread.deleteLater()
+        self.obsbot_thread = None
 
     def reconnect_obsbot(self, *args):
         if self.obsbot:
             self.status_label.setText("Reconnecting OBSBOT...")
             self.reconnect_obsbot_btn.setEnabled(False)
-            QApplication.processEvents()
-            self.obsbot.disconnect()
-            if self.obsbot.connect():
-                self.obsbot.set_ai_mode(0)
-                self.obsbot_ai_combo.setCurrentIndex(0)
-                self.status_label.setText("OBSBOT Reconnected.")
-            else:
-                self.status_label.setText("OBSBOT Connection Failed.")
-            self.reconnect_obsbot_btn.setEnabled(True)
+            
+            self.obsbot_thread = ObsbotConnectThread(self.obsbot, reconnect=True)
+            self.obsbot_thread.finished.connect(self._on_obsbot_reconnect_finished)
+            self.obsbot_thread.start()
+
+    def _on_obsbot_reconnect_finished(self, success):
+        if success:
+            self.obsbot.set_ai_mode(0)
+            self.obsbot_ai_combo.setCurrentIndex(0)
+            self.status_label.setText("OBSBOT Reconnected.")
+        else:
+            self.status_label.setText("OBSBOT Connection Failed.")
+        self.reconnect_obsbot_btn.setEnabled(True)
+        self.obsbot_thread.deleteLater()
+        self.obsbot_thread = None
 
     def load_profiles(self):
         try:
@@ -1575,13 +1834,18 @@ class MainWindow(QMainWindow):
             except subprocess.TimeoutExpired:
                 self.stream_process.kill()
                 
-        if self.worker:
-            self.worker.stop()
-        if self.thread:
-            self.thread.quit()
-            if not self.thread.wait(3000):
-                self.thread.terminate()
-                self.thread.wait()
+        worker = self.worker
+        thread = self.thread
+        self.worker = None
+        self.thread = None
+        
+        if worker:
+            worker.stop()
+        if thread:
+            thread.quit()
+            if not thread.wait(3000):
+                thread.terminate()
+                thread.wait()
             
         event.accept()
 
