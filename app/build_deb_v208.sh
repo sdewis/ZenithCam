@@ -14,7 +14,7 @@ echo "Copying app files..." >> /home/sean/zenithcam_build.log
 cp -r /home/sean/CodeFolder/ZenithCam_SDK_Integrated/app/* /home/sean/zenithcam_deb_local/opt/zenithcam/
 rm -rf /home/sean/zenithcam_deb_local/opt/zenithcam/venv
 mkdir -p /home/sean/zenithcam_deb_local/opt/zenithcam/models
-cp /home/sean/CodeFolder/ZenithCam_SDK_Integrated/models/erax_nsfw/erax_nsfw_yolo11n.onnx /home/sean/zenithcam_deb_local/opt/zenithcam/models/erax_nsfw_yolo11n.onnx
+cp /home/sean/CodeFolder/ZenithCam_SDK_Integrated/models/erax_nsfw/erax_nsfw_yolo11s.onnx /home/sean/zenithcam_deb_local/opt/zenithcam/models/erax_nsfw_yolo11s.onnx
 
 echo "Downloading dependencies (using Native Python 3.12)..." >> /home/sean/zenithcam_build.log
 mkdir -p /home/sean/zenithcam_deb_local/opt/zenithcam/vendor

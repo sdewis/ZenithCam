@@ -8,6 +8,7 @@ import logging
 import subprocess
 import fcntl
 import threading
+import psutil
 from logging.handlers import TimedRotatingFileHandler
 from PyQt6.QtWidgets import (QDockWidget, QApplication, QMainWindow, QWidget, QStyle, QVBoxLayout,
                              QHBoxLayout, QLabel, QComboBox, QPushButton,
@@ -153,8 +154,7 @@ QDockWidget::title {
     border-radius: 12px;
 }
 QGroupBox {
-    #333; border-radius: 8px; margin-top: 18px; background-color: rgba(40, 40, 45, 100);
-    border: 1px solid
+    border: 1px solid #333; border-radius: 8px; margin-top: 18px; background-color: rgba(40, 40, 45, 100);
 }
 QGroupBox::title {
     #00E676; font-weight: bold; font-size: 15px;
@@ -318,6 +318,7 @@ class ZenithWorker(QObject):
         self.last_cy = 0.0
         self._last_zoom = 1.0
         self._last_led = None
+        self.frame_count = 0
 
     @Slot()
     def process(self):
@@ -399,6 +400,8 @@ class ZenithWorker(QObject):
             ret, frame = self.hw.cap.read()
             if not ret:
                 break
+            
+            self.frame_count += 1
 
             # 16:9 Normalize
             h, w = frame.shape[:2]
@@ -541,7 +544,7 @@ class MainWindow(QMainWindow):
         self.params = {
             'input_source': 1,
             'output_device': "/dev/video20",
-            'model_path': os.path.join(os.path.dirname(__file__), "models/erax_nsfw_yolo11n.onnx"),
+            'model_path': os.path.join(os.path.dirname(__file__), "models/erax_nsfw_yolo11s.onnx"),
             'target_class_ids': [3, 4],
             'blur_class_ids': [99],
             'smooth_factor': 0.02,
@@ -982,6 +985,30 @@ class MainWindow(QMainWindow):
             Qt.DockWidgetArea.BottomDockWidgetArea, self.debug_dock)
         self.debug_dock.setVisible(False)
 
+        # --- PANEL 6: HARDWARE DASHBOARD ---
+        self.hw_container = QGroupBox("Real-time Performance")
+        hw_l = QVBoxLayout(self.hw_container)
+        
+        self.hw_cpu_label = QLabel("CPU Usage: --%")
+        self.hw_ram_label = QLabel("RAM Usage: --%")
+        self.hw_fps_label = QLabel("Output FPS: --")
+        
+        hw_l.addWidget(self.hw_cpu_label)
+        hw_l.addWidget(self.hw_ram_label)
+        hw_l.addWidget(self.hw_fps_label)
+        
+        self.hw_dock = QDockWidget("📊 System Dashboard", self)
+        self.hw_dock.setObjectName("HardwareDock")
+        self.hw_dock.setWidget(self.hw_container)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.hw_dock)
+        self.hw_dock.setVisible(True)
+        
+        # Hardware Update Timer
+        self.hw_timer = QTimer(self)
+        self.hw_timer.timeout.connect(self.update_hardware_stats)
+        self.hw_timer.start(1000)
+        self.last_frame_count = 0
+
         self.update_classes({0: "anus", 1: "action_zoom",
                             2: "nipple", 3: "penis", 4: "vagina", 99: "face"})
         self.move_timer = QTimer(self)
@@ -1001,6 +1028,30 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def append_log(self, text): self.log_text.append(text)
+
+    def update_hardware_stats(self):
+        cpu_usage = psutil.cpu_percent()
+        ram = psutil.virtual_memory()
+        ram_usage = ram.percent
+        
+        # Calculate FPS based on frames processed in the last second
+        current_frames = 0
+        if self.worker and hasattr(self.worker, 'frame_count'):
+            current_frames = self.worker.frame_count
+            
+        fps = current_frames - self.last_frame_count
+        self.last_frame_count = current_frames
+        
+        self.hw_cpu_label.setText(f"CPU Usage: {cpu_usage:.1f}%")
+        self.hw_ram_label.setText(f"RAM Usage: {ram_usage:.1f}% ({ram.used / (1024**3):.1f} GB)")
+        if self.is_tracking:
+            self.hw_fps_label.setText(f"Output FPS: {fps}")
+        else:
+            self.hw_fps_label.setText("Output FPS: --")
+            
+        # Optional: Add color coding based on usage
+        self.hw_cpu_label.setStyleSheet("color: red;" if cpu_usage > 85 else "color: #E2E2E2;")
+        self.hw_ram_label.setStyleSheet("color: red;" if ram_usage > 85 else "color: #E2E2E2;")
 
     def init_tray(self):
         self.tray_icon = QSystemTrayIcon(self)

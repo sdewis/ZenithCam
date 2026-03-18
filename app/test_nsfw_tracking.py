@@ -15,7 +15,7 @@ logger = logging.getLogger("NSFW_Test")
 
 def run_test():
     # Model configuration
-    model_path = "../models/erax_nsfw/erax_nsfw_yolo11n.onnx"
+    model_path = "../models/erax_nsfw/erax_nsfw_yolo11s.onnx"
     # Mapping based on erax-ai/EraX-NSFW-V1.0
     # 0: anus, 1: action_zoom, 2: nipple, 3: penis, 4: vagina
     target_class_ids = [1, 3, 4] # Tracking action_zoom, penis, vagina
