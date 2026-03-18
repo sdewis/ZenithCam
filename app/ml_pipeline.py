@@ -28,7 +28,18 @@ class MLPipeline(threading.Thread):
         self.input_resolution = config.get("inference_resolution", (640,480))
         
         # ONNX Runtime
-        self.providers = [config.get("execution_provider", "CPUExecutionProvider")]
+        provider_cfg = config.get("execution_provider", "CPUExecutionProvider")
+        if provider_cfg == "OpenVINOExecutionProvider":
+            self.providers = [
+                ("OpenVINOExecutionProvider", {"device_type": "GPU"}),
+                ("OpenVINOExecutionProvider", {"device_type": "CPU"}),
+                "CPUExecutionProvider"
+            ]
+        elif isinstance(provider_cfg, str):
+            self.providers = [provider_cfg, "CPUExecutionProvider"]
+        else:
+            self.providers = provider_cfg
+
         try:
             self.session = ort.InferenceSession(self.model_path, providers=self.providers)
             self.input_name = self.session.get_inputs()[0].name
@@ -217,33 +228,10 @@ class MLPipeline(threading.Thread):
                 # For 720p/1080p, full flow is slow.
                 # Let's use a very simplified approach: Calculate flow on a downscaled version.
                 
-                small_prev = cv2.resize(self.prev_gray, (160, 90), interpolation=cv2.INTER_NEAREST)
-                small_curr = cv2.resize(current_gray, (160, 90), interpolation=cv2.INTER_NEAREST)
-                
-                flow = cv2.calcOpticalFlowFarneback(small_prev, small_curr, None, 0.5, 3, 15, 3, 5, 1.2, 0)
-                
-                sx = frame.shape[1] / 160.0
-                sy = frame.shape[0] / 90.0
-                
-                tracked_boxes = []
-                for box in self.current_boxes:
-                    x, y, w, h, cid, conf = box
-                    
-                    # Center in small coords
-                    cx = int((x + w/2) / sx)
-                    cy = int((y + h/2) / sy)
-                    
-                    cx = max(0, min(cx, 159))
-                    cy = max(0, min(cy, 89))
-                    
-                    dx, dy = flow[cy, cx]
-                    
-                    # Scale flow back
-                    dx *= sx
-                    dy *= sy
-                    
-                    tracked_boxes.append([int(x+dx), int(y+dy), w, h, cid, conf])
-                self.current_boxes = tracked_boxes
+                # At 100fps on an iGPU, optical flow is a major bottleneck on the CPU.
+                # Since the PTZ camera applies a Kalman filter, we can safely persist the boxes 
+                # without tracking them between inference frames.
+                pass
 
         # 3. Trigger new inference if idle
         if not self.inference_busy and self.frame_queue.empty():

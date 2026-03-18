@@ -222,6 +222,7 @@ class HardwareManager:
         if self.cap.isOpened():
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            self.cap.set(cv2.CAP_PROP_FPS, 100)
             self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(
                 'M', 'J', 'P', 'G'))  # Often better for webcams
         else:
@@ -271,18 +272,22 @@ class HardwareManager:
                     fd = self.fake_cam._video_device
                     if fd > 0:
                         os.close(fd)
-            except:
-                pass
+                        self.fake_cam._video_device = -1
+                        global_logger.info(f"HardwareManager: Successfully closed FD {fd}")
+            except Exception as e:
+                global_logger.error(f"HardwareManager: Error closing FD: {e}")
             self.fake_cam = None
 
     def release_renderer(self):
         if self.renderer:
             global_logger.info("HardwareManager: Releasing renderer")
             try:
-                if hasattr(self.renderer, 'ctx'):
+                if hasattr(self.renderer, 'release'):
+                    self.renderer.release()
+                elif hasattr(self.renderer, 'ctx'):
                     self.renderer.ctx.release()
-            except:
-                pass
+            except Exception as e:
+                global_logger.error(f"HardwareManager: Error releasing renderer: {e}")
             self.renderer = None
 
     def cleanup_all(self):
@@ -521,7 +526,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("ZenithCam: Plasma Environment")
-        self.setMinimumSize(800, 600)
+        self.setMinimumSize(1, 1)
         self.resize(1280, 720)
 
         # Dock Options
@@ -559,16 +564,13 @@ class MainWindow(QMainWindow):
         self.stream_process = None
 
         self.obsbot = OBSBOTSDK()
-        if self.obsbot.init() and self.obsbot.connect():
-            global_logger.info("Connected to OBSBOT SDK")
-            self.obsbot.set_ai_mode(0)
-            self.params['obsbot'] = self.obsbot
-        else:
-            global_logger.warning(
-                "OBSBOT SDK connection failed. Retry via UI.")
+        self.params['obsbot'] = self.obsbot
+        QTimer.singleShot(100, self.async_init_obsbot)
 
         self.worker = None
         self.thread = None
+        self.is_tracking = False
+        self.is_shutting_down = False
 
         # Central widget is just a placeholder to allow docking
         self.central_placeholder = QWidget()
@@ -676,7 +678,7 @@ class MainWindow(QMainWindow):
         self.input_preview_group = QGroupBox()
         in_l = QVBoxLayout(self.input_preview_group)
         self.input_preview_label = QLabel("Waiting for camera...")
-        self.input_preview_label.setMinimumSize(320, 180)
+        self.input_preview_label.setMinimumSize(1, 1)
         self.input_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         in_l.addWidget(self.input_preview_label)
         self.input_preview_dock.setWidget(self.input_preview_group)
@@ -689,7 +691,7 @@ class MainWindow(QMainWindow):
         self.output_preview_group = QGroupBox()
         out_l = QVBoxLayout(self.output_preview_group)
         self.output_preview_label = QLabel("Waiting for AI processing...")
-        self.output_preview_label.setMinimumSize(320, 180)
+        self.output_preview_label.setMinimumSize(1, 1)
         self.output_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         out_l.addWidget(self.output_preview_label)
         self.output_preview_dock.setWidget(self.output_preview_group)
@@ -1158,16 +1160,27 @@ class MainWindow(QMainWindow):
             self.obsbot_ai_combo.setCurrentIndex(0)
 
     def toggle_tracking(self, *args):
-        if self.thread and self.thread.isRunning():
+        if getattr(self, 'is_shutting_down', False):
+            return
+
+        if self.is_tracking:
+            self.is_tracking = False
             self.start_btn.setEnabled(False)
             self.start_btn.setText("Stopping...")
-            self.worker.stop()
-            self.thread.quit()
-            self.thread.wait()
+            
+            if self.worker:
+                self.worker.stop()
+            if self.thread:
+                self.thread.quit()
+                if not self.thread.wait(3000):
+                    self.thread.terminate()
+                    self.thread.wait()
+                
             self.start_btn.setEnabled(True)
             self.worker = None
             self.thread = None
         else:
+            self.is_tracking = True
             self.params['input_source'], self.params['output_device'] = self.input_spin.value(
             ), self.output_edit.currentText()
             self.update_smoothing()
@@ -1188,6 +1201,10 @@ class MainWindow(QMainWindow):
                 "background-color: #FF5252; color: white; font-weight: bold; padding: 15px; border-radius: 8px;")
 
     def _on_worker_finished(self):
+        if getattr(self, 'is_shutting_down', False):
+            return
+            
+        self.is_tracking = False
         self.start_btn.setEnabled(True)
         self.start_btn.setText("Start Tracking")
         self.start_btn.setStyleSheet(
@@ -1311,16 +1328,34 @@ class MainWindow(QMainWindow):
         if self.obsbot and self.obsbot.connected:
             self.obsbot.set_privacy_mode(self.privacy_cb.isChecked())
 
+    def async_init_obsbot(self):
+        self.status_label.setText("Connecting OBSBOT...")
+        if hasattr(self, 'reconnect_obsbot_btn'):
+            self.reconnect_obsbot_btn.setEnabled(False)
+        QApplication.processEvents()
+        if self.obsbot.init() and self.obsbot.connect():
+            global_logger.info("Connected to OBSBOT SDK")
+            self.obsbot.set_ai_mode(0)
+            self.status_label.setText("Status: Idle (OBSBOT Ready)")
+        else:
+            global_logger.warning("OBSBOT SDK connection failed. Retry via UI.")
+            self.status_label.setText("Status: Idle (OBSBOT Offline)")
+        if hasattr(self, 'reconnect_obsbot_btn'):
+            self.reconnect_obsbot_btn.setEnabled(True)
+
     def reconnect_obsbot(self, *args):
         if self.obsbot:
-            self.status_label.setText("Reconnecting...")
+            self.status_label.setText("Reconnecting OBSBOT...")
+            self.reconnect_obsbot_btn.setEnabled(False)
+            QApplication.processEvents()
             self.obsbot.disconnect()
             if self.obsbot.connect():
                 self.obsbot.set_ai_mode(0)
                 self.obsbot_ai_combo.setCurrentIndex(0)
-                self.status_label.setText("Reconnected.")
+                self.status_label.setText("OBSBOT Reconnected.")
             else:
-                self.status_label.setText("Failed.")
+                self.status_label.setText("OBSBOT Connection Failed.")
+            self.reconnect_obsbot_btn.setEnabled(True)
 
     def load_profiles(self):
         try:
@@ -1474,6 +1509,7 @@ class MainWindow(QMainWindow):
                     f"Streaming to {len(self.params['active_streams'])} destination(s)")
 
     def closeEvent(self, event):
+        self.is_shutting_down = True
         if self.params.get('active_streams'):
             for sp in self.params['active_streams']:
                 try:
@@ -1487,17 +1523,20 @@ class MainWindow(QMainWindow):
                 self.stream_process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 self.stream_process.kill()
-        if self.thread and self.thread.isRunning():
+                
+        if self.worker:
             self.worker.stop()
+        if self.thread:
             self.thread.quit()
-            self.thread.wait(3000)
-            if self.thread.isRunning():
+            if not self.thread.wait(3000):
                 self.thread.terminate()
                 self.thread.wait()
+            
         event.accept()
 
 
 if __name__ == "__main__":
+    os.environ["QT_QPA_PLATFORM"] = "wayland;xcb"
     app = QApplication(sys.argv)
     app.setStyleSheet(STYLESHEET)
     window = MainWindow()

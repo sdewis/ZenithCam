@@ -18,12 +18,21 @@ class Renderer:
         self.blur_mode = 1 # Default to Pixelate
         
         # 1. Create Context
+        self.use_cpu = False
         try:
-            self.ctx = moderngl.create_context(standalone=True)
-            logger.info("ModernGL Context created (Standalone).")
+            self.ctx = moderngl.create_context(standalone=True, backend='egl')
+            logger.info("ModernGL Context created (Standalone - EGL).")
         except Exception as e:
-            logger.error(f"Failed to create ModernGL context: {e}")
-            raise
+            logger.warning(f"Failed to create EGL context: {e}, falling back to default.")
+            try:
+                self.ctx = moderngl.create_context(standalone=True)
+                logger.info("ModernGL Context created (Standalone).")
+            except Exception as e2:
+                logger.error(f"Failed to create ModernGL context: {e2}. Falling back to CPU rendering.")
+                self.use_cpu = True
+
+        if self.use_cpu:
+            return
 
         # 2. Create Framebuffer
         self.fbo = self.ctx.simple_framebuffer((self.width, self.height))
@@ -105,8 +114,39 @@ class Renderer:
         """Sets renderer configuration based on performance tier."""
         self.blur_mode = 2 if config.get("blur_type") == "gaussian" else 1
 
+    def _render_cpu(self, frame_rgb, crop_rect, blur_boxes):
+        height, width = frame_rgb.shape[:2]
+        x, y, w, h = [int(v) for v in crop_rect]
+        
+        x = max(0, min(x, width - 1))
+        y = max(0, min(y, height - 1))
+        w = max(1, min(w, width - x))
+        h = max(1, min(h, height - y))
+
+        cropped = frame_rgb[y:y+h, x:x+w].copy()
+        
+        if blur_boxes:
+            for (bx, by, bw, bh) in blur_boxes:
+                bx, by, bw, bh = int(bx) - x, int(by) - y, int(bw), int(bh)
+                ix1, iy1 = max(0, bx), max(0, by)
+                ix2, iy2 = min(w, bx + bw), min(h, by + bh)
+                
+                if ix1 < ix2 and iy1 < iy2:
+                    roi = cropped[iy1:iy2, ix1:ix2]
+                    if self.blur_mode == 1:
+                        small = cv2.resize(roi, (max(1, (ix2-ix1)//15), max(1, (iy2-iy1)//15)), interpolation=cv2.INTER_LINEAR)
+                        roi = cv2.resize(small, (ix2-ix1, iy2-iy1), interpolation=cv2.INTER_NEAREST)
+                    else:
+                        roi = cv2.GaussianBlur(roi, (51, 51), 0)
+                    cropped[iy1:iy2, ix1:ix2] = roi
+
+        return cv2.resize(cropped, (self.width, self.height), interpolation=cv2.INTER_LINEAR)
+
     def render(self, frame_rgb, crop_rect, blur_boxes):
         """Renders the frame with zoom and blur."""
+        if getattr(self, 'use_cpu', False):
+            return self._render_cpu(frame_rgb, crop_rect, blur_boxes)
+
         height, width = frame_rgb.shape[:2]
         
         if self.texture is None or self.texture.size != (width, height):
@@ -133,4 +173,24 @@ class Renderer:
         self.fbo.clear()
         self.vao.render(moderngl.TRIANGLE_STRIP)
         return np.frombuffer(self.fbo.read(components=3), dtype=np.uint8).reshape((self.height, self.width, 3))
+
+    def release(self):
+        """Releases all ModernGL resources."""
+        try:
+            if self.texture:
+                self.texture.release()
+                self.texture = None
+            if hasattr(self, 'vao') and self.vao:
+                self.vao.release()
+            if hasattr(self, 'vbo') and self.vbo:
+                self.vbo.release()
+            if hasattr(self, 'prog') and self.prog:
+                self.prog.release()
+            if hasattr(self, 'fbo') and self.fbo:
+                self.fbo.release()
+            if hasattr(self, 'ctx') and self.ctx:
+                self.ctx.release()
+            logger.info("ModernGL resources released successfully.")
+        except Exception as e:
+            logger.error(f"Error releasing ModernGL resources: {e}")
 
