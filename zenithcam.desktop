@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=ZenithCam Studio
+Comment=AI-Driven PTZ Broadcasting Suite for Niri/Wayland
+Exec=/home/sean/CodeFolder/ZenithCam_SDK_Integrated/app/start_cam.sh
+Icon=camera-web
+Terminal=false
+Categories=AudioVideo;AudioVideoEditing;
+StartupNotify=true
+Keywords=Streaming;OBSBOT;Webcam;AI;

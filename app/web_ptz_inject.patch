@@ -1,0 +1,51 @@
+--- main.py
++++ main.py
+@@ -1691,6 +1691,48 @@
+         if not self.stream_profiles:
+             self.stream_profiles = [
+                 {"name": "Default", "site": "Stripchat", "url": "rtmp://localhost:1935/live", "key": "test"}]
++
++    @Slot(dict)
++    def handle_web_ptz_command(self, data):
++        """
++        Receives dictionary commands from the Tampermonkey WebBridge.
++        Translates them into actions on the physical OBSBOT camera.
++        """
++        if not self.obsbot or not self.obsbot.connected:
++            global_logger.warning("Web PTZ Command ignored: OBSBOT not connected.")
++            return
++
++        command = data.get("command")
++        action = data.get("action")
++        
++        if command == "ptz":
++            if self.obsbot_ai_combo.currentIndex() != 0:
++                self.obsbot_ai_combo.setCurrentIndex(0)
++                self.obsbot.set_ai_mode(0)
++
++            speed = 30.0
++            if action == "up":
++                self.obsbot.set_gimbal_speed(-speed, 0.0)
++            elif action == "down":
++                self.obsbot.set_gimbal_speed(speed, 0.0)
++            elif action == "left":
++                self.obsbot.set_gimbal_speed(0.0, speed)
++            elif action == "right":
++                self.obsbot.set_gimbal_speed(0.0, -speed)
++            elif action == "stop":
++                self.obsbot.set_gimbal_speed(0.0, 0.0)
++            elif action == "reset":
++                self.obsbot.reset_gimbal()
++                
++        elif command == "ptz_aim":
++            nx = float(data.get("x", 0.0))
++            ny = float(data.get("y", 0.0))
++            
++            global_logger.info(f"Web PTZ Click-to-Aim received: ({nx}, {ny})")
++            
++            # Send burst speed mapping directly since relative pointing is tricky without precise angle feedback
++            self.obsbot.set_gimbal_speed(ny * 40.0, nx * 60.0)
++            QTimer.singleShot(250, lambda: self.obsbot.set_gimbal_speed(0, 0))
+ 
+     def save_profiles_to_disk(self):
+         try:

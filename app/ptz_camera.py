@@ -1,5 +1,7 @@
 import numpy as np
 import logging
+import time
+import random
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -41,7 +43,14 @@ class PTZCamera:
         self.manual_center_x = source_w / 2.0
         self.manual_center_y = source_h / 2.0
         self.manual_zoom = 1.0  # 1.0 = full width, 2.0 = half width
+        
+        self.shake_end_time = 0.0
+        self.shake_intensity = 0.0
         logger.info(f"PTZ Camera initialized: {source_w}x{source_h} with Kalman Filter")
+
+    def trigger_shake(self, duration=5.0, intensity=50.0):
+        self.shake_end_time = time.time() + duration
+        self.shake_intensity = intensity
 
     def set_manual_center(self, target_x, target_y):
         self.manual_mode = True
@@ -125,5 +134,15 @@ class PTZCamera:
         self.state = self.state + (K @ y)
         self.uncertainty = (np.eye(8) - (K @ self.H)) @ self.uncertainty
         
-        return tuple(self.state[:4].astype(int))
-
+        res_x, res_y, res_w, res_h = self.state[:4].astype(int)
+        
+        # Apply "Hype Train" shake effect directly to the virtual crop window
+        if time.time() < self.shake_end_time:
+            res_x += int(random.uniform(-self.shake_intensity, self.shake_intensity))
+            res_y += int(random.uniform(-self.shake_intensity, self.shake_intensity))
+            
+        # Clamp back to absolute source dimensions
+        res_x = max(0, min(res_x, self.source_w - res_w))
+        res_y = max(0, min(res_y, self.source_h - res_h))
+        
+        return (res_x, res_y, res_w, res_h)

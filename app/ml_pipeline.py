@@ -83,8 +83,53 @@ class MLPipeline(threading.Thread):
             )
             logger.info("MediaPipe FaceLandmarker loaded successfully.")
         except Exception as e:
-            logger.error(f"Failed to load MediaPipe model: {e}")
+            logger.error(f"Failed to load MediaPipe Face model: {e}")
             self._mp_landmarker = None
+
+        # Initialize MediaPipe Hand Landmarker
+        mp_hand_model_path = os.path.join(os.path.dirname(__file__), "models", "hand_landmarker.task")
+        try:
+            self._mp_hand_landmarker = vision.HandLandmarker.create_from_options(
+                vision.HandLandmarkerOptions(
+                    base_options=BaseOptions(model_asset_path=mp_hand_model_path),
+                    running_mode=vision.RunningMode.VIDEO,
+                    num_hands=1,
+                    min_hand_detection_confidence=0.5,
+                    min_hand_presence_confidence=0.5,
+                    min_tracking_confidence=0.5,
+                )
+            )
+            logger.info("MediaPipe HandLandmarker loaded successfully.")
+        except Exception as e:
+            logger.error(f"Failed to load MediaPipe Hand model: {e}")
+            self._mp_hand_landmarker = None
+
+        # Initialize MediaPipe Pose Landmarker
+        mp_pose_model_path = os.path.join(os.path.dirname(__file__), "models", "pose_landmarker.task")
+        try:
+            self._mp_pose_landmarker = vision.PoseLandmarker.create_from_options(
+                vision.PoseLandmarkerOptions(
+                    base_options=BaseOptions(model_asset_path=mp_pose_model_path),
+                    running_mode=vision.RunningMode.VIDEO,
+                    num_poses=1,
+                    min_pose_detection_confidence=0.5,
+                    min_pose_presence_confidence=0.5,
+                    min_tracking_confidence=0.5,
+                )
+            )
+            logger.info("MediaPipe PoseLandmarker loaded successfully.")
+        except Exception as e:
+            logger.error(f"Failed to load MediaPipe Pose model: {e}")
+            self._mp_pose_landmarker = None
+
+        # Feature Configs
+        self.safe_zone = config.get("safe_zone", None) # e.g., [x_min, y_min, x_max, y_max] normalized
+        self.gesture_callback = None # Will be set by main
+        self.nsfw_callback = None # Will be set by main
+        self.pose_callback = None # Will be set by main
+        self._last_gesture_time = 0
+        self._last_posture = "upright"
+        self._posture_debounce = 0.0
 
     def preprocess(self, frame):
         img = cv2.resize(frame, self.input_resolution)
@@ -123,22 +168,46 @@ class MLPipeline(threading.Thread):
         indices = cv2.dnn.NMSBoxes(boxes_np[:, :4].tolist(), boxes_np[:, 5].tolist(), conf_threshold, 0.4)
         return [boxes[i] for i in indices.flatten()] if len(indices) > 0 else []
 
+    def _is_in_safe_zone(self, box, frame_w, frame_h):
+        if not self.safe_zone:
+            return True
+        x_min_sz, y_min_sz, x_max_sz, y_max_sz = self.safe_zone
+        bx, by, bw, bh = box[:4]
+        cx, cy = bx + bw/2, by + bh/2
+        norm_x, norm_y = cx / frame_w, cy / frame_h
+        return (x_min_sz <= norm_x <= x_max_sz) and (y_min_sz <= norm_y <= y_max_sz)
+
     def run(self):
         """Inference Loop"""
         while self.running:
             try:
                 frame = self.frame_queue.get(timeout=0.1)
                 self.inference_busy = True
+                frame_h, frame_w = frame.shape[:2]
                 
                 # Inference YOLO
                 input_tensor = self.preprocess(frame)
                 outputs = self.session.run(self.output_names, {self.input_name: input_tensor})
-                boxes = self.postprocess(outputs, frame.shape)
+                raw_boxes = self.postprocess(outputs, frame.shape)
                 
-                # Inference MediaPipe
+                boxes = []
+                nsfw_detected = False
+                nsfw_classes = self.config.get('nsfw_classes', [0, 1, 2])
+                
+                for box in raw_boxes:
+                    if box[4] in nsfw_classes:
+                        nsfw_detected = True
+                    if self._is_in_safe_zone(box, frame_w, frame_h):
+                        boxes.append(box)
+
+                if nsfw_detected and self.nsfw_callback:
+                    self.nsfw_callback()
+                
+                timestamp_ms = int(time.time() * 1000)
+                rgb_frame = None
+
+                # Inference MediaPipe Face
                 if self._mp_landmarker:
-                    timestamp_ms = int(time.time() * 1000)
-                    
                     # Apply intelligent contrast enhancement (CLAHE) for better face detection
                     lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
                     l, a, b = cv2.split(lab)
@@ -153,10 +222,9 @@ class MLPipeline(threading.Thread):
                     face_detected_this_frame = False
                     if result.face_landmarks:
                         face = result.face_landmarks[0]
-                        h, w = frame.shape[:2]
                         # Calculate bounding box from landmarks
-                        xs = [lm.x * w for lm in face]
-                        ys = [lm.y * h for lm in face]
+                        xs = [lm.x * frame_w for lm in face]
+                        ys = [lm.y * frame_h for lm in face]
                         x_min, x_max = int(min(xs)), int(max(xs))
                         y_min, y_max = int(min(ys)), int(max(ys))
                         # Add some padding to face box
@@ -164,23 +232,24 @@ class MLPipeline(threading.Thread):
                         pad_h = int((y_max - y_min) * 0.2)
                         fx = max(0, x_min - pad_w)
                         fy = max(0, y_min - pad_h)
-                        fw = min(w - fx, (x_max - x_min) + pad_w * 2)
-                        fh = min(h - fy, (y_max - y_min) + pad_h * 2)
+                        fw = min(frame_w - fx, (x_max - x_min) + pad_w * 2)
+                        fh = min(frame_h - fy, (y_max - y_min) + pad_h * 2)
                         
                         current_face = [fx, fy, fw, fh]
                         
-                        if not hasattr(self, '_last_face_box') or self._last_face_box is None:
-                            self._last_face_box = current_face
-                        else:
-                            # EMA Smoothing to eliminate flickering
-                            alpha = self.smooth_factor
-                            self._last_face_box = [
-                                int(alpha * current_face[i] + (1 - alpha) * self._last_face_box[i])
-                                for i in range(4)
-                            ]
-                        
-                        self._face_timeout = 0
-                        face_detected_this_frame = True
+                        if self._is_in_safe_zone(current_face, frame_w, frame_h):
+                            if not hasattr(self, '_last_face_box') or self._last_face_box is None:
+                                self._last_face_box = current_face
+                            else:
+                                # EMA Smoothing to eliminate flickering
+                                alpha = self.smooth_factor
+                                self._last_face_box = [
+                                    int(alpha * current_face[i] + (1 - alpha) * self._last_face_box[i])
+                                    for i in range(4)
+                                ]
+                            
+                            self._face_timeout = 0
+                            face_detected_this_frame = True
                     
                     # Persist the face box for a few frames if detection drops
                     if not face_detected_this_frame and hasattr(self, '_last_face_box') and self._last_face_box is not None:
@@ -189,10 +258,67 @@ class MLPipeline(threading.Thread):
                         # Keep the face blurred for up to 10 inference frames if it drops out
                         if self._face_timeout > 10:
                             self._last_face_box = None
+                        
+                        # Cinematic B-Roll trigger logic (lost face for > 30 inference ticks ~3-5s)
+                        if self._face_timeout == 30 and hasattr(self, 'broll_callback') and self.broll_callback:
+                            self.broll_callback()
                     
                     if hasattr(self, '_last_face_box') and self._last_face_box is not None:
                          lfx, lfy, lfw, lfh = self._last_face_box
                          boxes.append([lfx, lfy, lfw, lfh, 99, 1.0])
+
+                # Inference MediaPipe Hands
+                if hasattr(self, '_mp_hand_landmarker') and self._mp_hand_landmarker and self.gesture_callback:
+                    if rgb_frame is None:
+                        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+                    hand_result = self._mp_hand_landmarker.detect_for_video(mp_image, timestamp_ms)
+                    
+                    if hand_result.hand_landmarks and (time.time() - self._last_gesture_time > 2.0):
+                        # Simple gesture logic based on finger states (Y-coords)
+                        landmarks = hand_result.hand_landmarks[0]
+                        # Landmarks: 8=Index Tip, 6=Index PIP, 12=Middle Tip, 10=Middle PIP
+                        # 16=Ring Tip, 14=Ring PIP, 20=Pinky Tip, 18=Pinky PIP
+                        
+                        index_up = landmarks[8].y < landmarks[6].y
+                        middle_up = landmarks[12].y < landmarks[10].y
+                        ring_up = landmarks[16].y < landmarks[14].y
+                        pinky_up = landmarks[20].y < landmarks[18].y
+                        
+                        if index_up and middle_up and not ring_up and not pinky_up:
+                            self.gesture_callback('peace')
+                            self._last_gesture_time = time.time()
+                        elif index_up and middle_up and ring_up and pinky_up:
+                            self.gesture_callback('palm')
+                            self._last_gesture_time = time.time()
+                        # Note: Thumbs up is harder with just Y, skipping for simplicity or would need X comparison
+
+                # Inference MediaPipe Pose (Posture Trigger)
+                if hasattr(self, '_mp_pose_landmarker') and self._mp_pose_landmarker and self.pose_callback:
+                    if rgb_frame is None:
+                        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+                    pose_result = self._mp_pose_landmarker.detect_for_video(mp_image, timestamp_ms)
+                    
+                    if pose_result.pose_landmarks and (time.time() - self._posture_debounce > 2.0):
+                        landmarks = pose_result.pose_landmarks[0]
+                        
+                        # Midpoints of shoulders (11, 12) and hips (23, 24)
+                        sh_x = (landmarks[11].x + landmarks[12].x) / 2.0
+                        sh_y = (landmarks[11].y + landmarks[12].y) / 2.0
+                        hip_x = (landmarks[23].x + landmarks[24].x) / 2.0
+                        hip_y = (landmarks[23].y + landmarks[24].y) / 2.0
+                        
+                        dx = abs(sh_x - hip_x)
+                        dy = abs(sh_y - hip_y)
+                        
+                        # If horizontal distance (dx) > vertical distance (dy), spine is horizontal
+                        current_posture = "reclined" if dx > dy else "upright"
+                        
+                        if current_posture != self._last_posture:
+                            self.pose_callback(current_posture)
+                            self._last_posture = current_posture
+                            self._posture_debounce = time.time()
                 
                 # Clear old results and put new
                 if not self.result_queue.empty():
@@ -257,3 +383,5 @@ class MLPipeline(threading.Thread):
         self.running = False
         if self._mp_landmarker:
             self._mp_landmarker.close()
+        if hasattr(self, '_mp_pose_landmarker') and self._mp_pose_landmarker:
+            self._mp_pose_landmarker.close()

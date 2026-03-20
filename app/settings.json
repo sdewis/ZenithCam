@@ -1,0 +1,44 @@
+{
+    "default": {
+        "input_source": 0,
+        "output_device": "/dev/video20",
+        "model_path": "/home/sean/CodeFolder/ZenithCam_SDK_Integrated/app/models/erax_nsfw_yolo11s.onnx",
+        "target_class_ids": [
+            1,
+            3
+        ],
+        "blur_class_ids": [],
+        "smooth_factor": 0.02,
+        "zoom_margin": 24,
+        "enable_physical_ptz": false,
+        "enable_onboard_tracker": false,
+        "draw_preview_roi": true,
+        "draw_output_roi": false,
+        "flip_video": false
+    },
+    "Floating?": {
+        "input_source": 0,
+        "output_device": "/dev/video20",
+        "model_path": "/home/sean/CodeFolder/ZenithCam_SDK_Integrated/app/models/erax_nsfw_yolo11s.onnx",
+        "target_class_ids": [
+            1,
+            3,
+            99
+        ],
+        "blur_class_ids": [
+            0,
+            2,
+            3,
+            4
+        ],
+        "smooth_factor": 0.02,
+        "zoom_margin": 24,
+        "enable_physical_ptz": false,
+        "enable_onboard_tracker": false,
+        "draw_preview_roi": true,
+        "draw_output_roi": false,
+        "flip_video": false,
+        "stream_encoder": 0,
+        "stream_quality": 0
+    }
+}

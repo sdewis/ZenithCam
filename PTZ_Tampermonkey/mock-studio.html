@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZenithCam Local Mock Studio</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1e1e2e;
+            color: #cdd6f4;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        h1 {
+            color: #89b4fa;
+        }
+
+        .studio-container {
+            background: #313244;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            width: 80%;
+            max-width: 900px;
+            text-align: center;
+        }
+
+        video {
+            width: 100%;
+            max-height: 500px;
+            background: #11111b;
+            border-radius: 8px;
+            border: 2px solid #89b4fa;
+            margin-bottom: 20px;
+        }
+
+        .controls button {
+            background: #89b4fa;
+            color: #11111b;
+            border: none;
+            padding: 10px 20px;
+            font-size: 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            margin: 5px;
+            transition: 0.2s;
+        }
+
+        .controls button:hover {
+            background: #b4befe;
+        }
+
+        .controls button.stop {
+            background: #f38ba8;
+        }
+
+        .controls button.stop:hover {
+            background: #eba0ac;
+        }
+
+        .log-panel {
+            background: #181825;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: left;
+            height: 150px;
+            overflow-y: auto;
+            margin-top: 20px;
+            font-family: monospace;
+            color: #a6e3a1;
+            font-size: 14px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h1>📡 ZenithCam Mock Studio</h1>
+
+    <div class="studio-container">
+        <video id="preview" autoplay playsinline muted></video>
+
+        <div class="controls">
+            <button id="btn-start" onclick="startCamera()">Start Broadcast Camera</button>
+            <button id="btn-stop" class="stop" onclick="stopCamera()">Stop Camera</button>
+        </div>
+
+        <div class="log-panel" id="log">
+            <div>[System] Mock Studio Initialized. Awaiting Camera...</div>
+        </div>
+    </div>
+
+    <script>
+        let activeStream = null;
+        const videoEl = document.getElementById('preview');
+        const logEl = document.getElementById('log');
+
+        function log(msg) {
+            logEl.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        async function startCamera() {
+            try {
+                log("Requesting navigator.mediaDevices.getUserMedia()...");
+                activeStream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 }, audio: false });
+                videoEl.srcObject = activeStream;
+                log("Camera feed acquired! WebRTC simulated broadcast is LIVE.");
+            } catch (err) {
+                log(`<span style="color: #f38ba8;">Error accessing camera: ${err.message}</span>`);
+            }
+        }
+
+        function stopCamera() {
+            if (activeStream) { activeStream.getTracks().forEach(track => track.stop()); }
+            videoEl.srcObject = null;
+            log("Camera stopped. Broadcast offline.");
+        }
+    </script>
+</body>
+
+</html>

@@ -1,5 +1,8 @@
 # Gemini Workspace Guidelines
 
+## Skills and Agents
+Always refresh your awareness of available skills and agents. Where appropriate, use skills and agents to accomplish tasks. You should make yourself a top tier expert in the subject of the current task and/or plan.
+
 ## Launching GUI Applications (Qt/Wayland)
 When launching GUI applications like `ZenithCam` (PyQt6) or `PlasmaLinux` (Qt6 C++), use the `run_shell_command` tool with `is_background: true` and execute the command directly **without** using `nohup` or `> /tmp/log 2>&1 &` background operators, as those may detach the process from the user's active display session or Wayland socket, causing the app window to be invisible or crash silently.
 

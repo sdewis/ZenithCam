@@ -3,6 +3,7 @@ import numpy as np
 import cv2
 import logging
 import struct
+import time
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -58,12 +59,18 @@ class Renderer:
                 uniform int blur_mode;
                 uniform vec4 blur_boxes[10];
                 uniform int num_boxes;
+                uniform float time;
                 in vec2 v_texcoord;
                 out vec4 f_color;
 
                 bool is_inside_box(vec2 uv, vec4 box) {
                     return (uv.x >= box.x && uv.x <= box.x + box.z &&
                             uv.y >= box.y && uv.y <= box.y + box.w);
+                }
+
+                // PRNG for digital glitch noise
+                float random(vec2 st) {
+                    return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123);
                 }
 
                 void main() {
@@ -80,7 +87,7 @@ class Renderer:
                             vec2 size = vec2(50.0, 50.0);
                             vec2 uv = floor(v_texcoord * size) / size;
                             f_color = texture(Texture, uv);
-                        } else { // Gaussian-ish
+                        } else if (blur_mode == 2) { // Gaussian-ish
                             vec4 color = vec4(0.0);
                             float blur_radius = 0.005;
                             float count = 0.0;
@@ -91,6 +98,33 @@ class Renderer:
                                 }
                             }
                             f_color = color / count;
+                        } else if (blur_mode == 3) { // Cyber-Glitch
+                            vec2 uv = v_texcoord;
+                            // Chromatic aberration jitter
+                            float jitter = sin(uv.y * 50.0 + time * 20.0) * 0.015;
+                            // Digital scanline effect
+                            float scanline = sin(uv.y * 800.0) * 0.04;
+                            
+                            vec4 c1 = texture(Texture, uv + vec2(jitter, 0.0));
+                            vec4 c2 = texture(Texture, uv + vec2(-jitter, 0.0));
+                            vec3 glitch_color = vec3(c1.r, texture(Texture, uv).g, c2.b);
+                            
+                            float noise = random(uv + vec2(time, time)) * 0.25;
+                            f_color = vec4(glitch_color - scanline - noise, 1.0);
+                        } else if (blur_mode == 4) { // Neon Edge-Glow
+                            vec2 uv = v_texcoord;
+                            vec2 texOffset = 1.0 / vec2(textureSize(Texture, 0));
+                            
+                            vec4 t = texture(Texture, uv + vec2(0.0, -texOffset.y));
+                            vec4 b = texture(Texture, uv + vec2(0.0, texOffset.y));
+                            vec4 l = texture(Texture, uv + vec2(-texOffset.x, 0.0));
+                            vec4 r = texture(Texture, uv + vec2(texOffset.x, 0.0));
+                            
+                            vec4 edge = abs(t - b) + abs(l - r);
+                            float intensity = clamp(length(edge.rgb) * 2.0, 0.0, 1.0);
+                            
+                            // Bright Neon Cyan glow over blackout
+                            f_color = vec4(0.0, intensity * 1.5, intensity * 2.0, 1.0);
                         }
                     } else {
                         f_color = texture(Texture, v_texcoord);
@@ -112,7 +146,15 @@ class Renderer:
 
     def set_config(self, config):
         """Sets renderer configuration based on performance tier."""
-        self.blur_mode = 2 if config.get("blur_type") == "gaussian" else 1
+        blur_type = config.get("blur_type", "pixelate")
+        if blur_type == "gaussian":
+            self.blur_mode = 2
+        elif blur_type == "cyber_glitch":
+            self.blur_mode = 3
+        elif blur_type == "edge_glow":
+            self.blur_mode = 4
+        else:
+            self.blur_mode = 1  # Pixelate
 
     def _render_cpu(self, frame_rgb, crop_rect, blur_boxes):
         height, width = frame_rgb.shape[:2]
@@ -169,6 +211,9 @@ class Renderer:
         if 'blur_boxes' in self.prog:
             self.prog['blur_boxes'].write(struct.pack('40f', *flat_boxes))
         self.prog['num_boxes'].value = len(norm_boxes)
+        
+        if 'time' in self.prog:
+            self.prog['time'].value = time.time() % 1000.0
 
         self.fbo.clear()
         self.vao.render(moderngl.TRIANGLE_STRIP)
@@ -193,4 +238,3 @@ class Renderer:
             logger.info("ModernGL resources released successfully.")
         except Exception as e:
             logger.error(f"Error releasing ModernGL resources: {e}")
-
