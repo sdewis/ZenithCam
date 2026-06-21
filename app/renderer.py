@@ -8,6 +8,7 @@ import struct
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("Renderer")
 
+
 class Renderer:
     def __init__(self, output_width=1280, output_height=720):
         """
@@ -15,8 +16,8 @@ class Renderer:
         """
         self.width = output_width
         self.height = output_height
-        self.blur_mode = 1 # Default to Pixelate
-        
+        self.blur_mode = 1  # Default to Pixelate
+
         # 1. Create Context
         try:
             self.ctx = moderngl.create_context(standalone=True)
@@ -28,7 +29,7 @@ class Renderer:
         # 2. Create Framebuffer
         self.fbo = self.ctx.simple_framebuffer((self.width, self.height))
         self.fbo.use()
-        
+
         # 3. Compile Shaders
         self.prog = self.ctx.program(
             vertex_shader="""
@@ -87,19 +88,100 @@ class Renderer:
                         f_color = texture(Texture, v_texcoord);
                     }
                 }
-            """
+            """,
         )
-        
-        vertices = np.array([
-            -1.0, -1.0, 0.0, 0.0,
-             1.0, -1.0, 1.0, 0.0,
-            -1.0,  1.0, 0.0, 1.0,
-             1.0,  1.0, 1.0, 1.0,
-        ], dtype='f4')
-        
+
+        vertices = np.array(
+            [
+                -1.0,
+                -1.0,
+                0.0,
+                0.0,
+                1.0,
+                -1.0,
+                1.0,
+                0.0,
+                -1.0,
+                1.0,
+                0.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+            ],
+            dtype="f4",
+        )
+
         self.vbo = self.ctx.buffer(vertices.tobytes())
-        self.vao = self.ctx.simple_vertex_array(self.prog, self.vbo, 'in_vert', 'in_texcoord')
+        self.vao = self.ctx.simple_vertex_array(
+            self.prog, self.vbo, "in_vert", "in_texcoord"
+        )
         self.texture = None
+        self._released = False
+
+    def __del__(self):
+        """Safety net to release resources when object is garbage collected."""
+        if not self._released:
+            self.release()
+
+    def release(self):
+        """Safely releases all GPU resources in reverse creation order."""
+        if self._released:
+            return
+
+        logger.info("Releasing GPU resources...")
+
+        # Release texture (if exists)
+        try:
+            if self.texture is not None:
+                self.texture.release()
+                self.texture = None
+        except Exception as e:
+            logger.error(f"Failed to release texture: {e}")
+
+        # Release VAO
+        try:
+            if self.vao is not None:
+                self.vao.release()
+                self.vao = None
+        except Exception as e:
+            logger.error(f"Failed to release VAO: {e}")
+
+        # Release VBO
+        try:
+            if self.vbo is not None:
+                self.vbo.release()
+                self.vbo = None
+        except Exception as e:
+            logger.error(f"Failed to release VBO: {e}")
+
+        # Release shader program
+        try:
+            if self.prog is not None:
+                self.prog.release()
+                self.prog = None
+        except Exception as e:
+            logger.error(f"Failed to release shader program: {e}")
+
+        # Release framebuffer
+        try:
+            if self.fbo is not None:
+                self.fbo.release()
+                self.fbo = None
+        except Exception as e:
+            logger.error(f"Failed to release framebuffer: {e}")
+
+        # Release context
+        try:
+            if self.ctx is not None:
+                self.ctx.release()
+                self.ctx = None
+        except Exception as e:
+            logger.error(f"Failed to release context: {e}")
+
+        self._released = True
+        logger.info("All GPU resources released successfully.")
 
     def set_config(self, config):
         """Sets renderer configuration based on performance tier."""
@@ -108,29 +190,37 @@ class Renderer:
     def render(self, frame_rgb, crop_rect, blur_boxes):
         """Renders the frame with zoom and blur."""
         height, width = frame_rgb.shape[:2]
-        
+
         if self.texture is None or self.texture.size != (width, height):
-            if self.texture: self.texture.release()
+            if self.texture:
+                self.texture.release()
             self.texture = self.ctx.texture((width, height), 3, frame_rgb.tobytes())
         else:
             self.texture.write(frame_rgb.tobytes())
-            
+
         self.texture.use()
-        self.prog['crop_rect'].value = (crop_rect[0]/width, crop_rect[1]/height, crop_rect[2]/width, crop_rect[3]/height)
-        self.prog['blur_mode'].value = self.blur_mode
-        
+        self.prog["crop_rect"].value = (
+            crop_rect[0] / width,
+            crop_rect[1] / height,
+            crop_rect[2] / width,
+            crop_rect[3] / height,
+        )
+        self.prog["blur_mode"].value = self.blur_mode
+
         norm_boxes = []
-        for (bx, by, bw, bh) in blur_boxes[:10]:
-            norm_boxes.append((bx/width, by/height, bw/width, bh/height))
-            
+        for bx, by, bw, bh in blur_boxes[:10]:
+            norm_boxes.append((bx / width, by / height, bw / width, bh / height))
+
         flat_boxes = [coord for box in norm_boxes for coord in box]
-        while len(flat_boxes) < 40: flat_boxes.append(0.0)
-        
-        if 'blur_boxes' in self.prog:
-            self.prog['blur_boxes'].write(struct.pack('40f', *flat_boxes))
-        self.prog['num_boxes'].value = len(norm_boxes)
+        while len(flat_boxes) < 40:
+            flat_boxes.append(0.0)
+
+        if "blur_boxes" in self.prog:
+            self.prog["blur_boxes"].write(struct.pack("40f", *flat_boxes))
+        self.prog["num_boxes"].value = len(norm_boxes)
 
         self.fbo.clear()
         self.vao.render(moderngl.TRIANGLE_STRIP)
-        return np.frombuffer(self.fbo.read(components=3), dtype=np.uint8).reshape((self.height, self.width, 3))
-
+        return np.frombuffer(self.fbo.read(components=3), dtype=np.uint8).reshape(
+            (self.height, self.width, 3)
+        )

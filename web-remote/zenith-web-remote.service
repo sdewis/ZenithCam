@@ -1,0 +1,16 @@
+[Unit]
+Description=ZenithCam Web-Remote Service
+After=network.target
+
+[Service]
+Type=simple
+User=sean
+Group=sean
+WorkingDirectory=/home/sean/CodeFolder/ZenithCam/web-remote
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production PORT=3000
+
+[Install]
+WantedBy=multi-user.target

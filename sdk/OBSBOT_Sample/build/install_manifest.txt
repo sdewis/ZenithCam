@@ -1,5 +1,0 @@
-/home/sean/CodeFolder/ZenithCam_SDK_Integrated/sdk/OBSBOT_Sample/build/rundir/OBSBOT_Sample
-/home/sean/CodeFolder/ZenithCam_SDK_Integrated/sdk/OBSBOT_Sample/build/rundir/libobsbot_bridge.so
-/home/sean/CodeFolder/ZenithCam_SDK_Integrated/sdk/OBSBOT_Sample/build/rundir/libdev.so
-/home/sean/CodeFolder/ZenithCam_SDK_Integrated/sdk/OBSBOT_Sample/build/rundir/libdev.so.1
-/home/sean/CodeFolder/ZenithCam_SDK_Integrated/sdk/OBSBOT_Sample/build/rundir/libdev.so.1.0.3

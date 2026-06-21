@@ -8,12 +8,14 @@ import logging
 import subprocess
 import fcntl
 import threading
+import psutil
+import signal
 from logging.handlers import TimedRotatingFileHandler
 from PyQt6.QtWidgets import (QDockWidget, QApplication, QMainWindow, QWidget, QStyle, QVBoxLayout,
                              QHBoxLayout, QLabel, QComboBox, QPushButton,
                              QSlider, QGroupBox, QFileDialog, QSpinBox,
                              QSplitter, QTextEdit, QCheckBox, QScrollArea, QGridLayout, QLineEdit, QListWidget, QMenu, QSystemTrayIcon)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal as Signal, pyqtSlot as Slot, QObject, QTimer, QEventLoop
+from PyQt6.QtCore import Qt, QThread, pyqtSignal as Signal, pyqtSlot as Slot, QObject, QTimer, QEventLoop, QSettings
 from PyQt6.QtGui import QImage, QPixmap
 import pyfakewebcam
 
@@ -27,6 +29,7 @@ from obsbot_wrapper import OBSBOTSDK
 
 
 def find_obsbot_device():
+    """Return all /dev/videoN nodes listed under OBSBOT Tiny SE in v4l2-ctl."""
     devices = []
     try:
         result = subprocess.run(
@@ -48,6 +51,64 @@ def find_obsbot_device():
     except Exception:
         pass
     return devices[0] if devices else None
+
+
+def find_obsbot_capture_index():
+    """Find the OBSBOT video node that can be read by OpenCV.
+    Checks for any device with 'OBSBOT' in its name.
+    Returns the first video node that supports video capture.
+    """
+    import glob as _glob
+    try:
+        result = subprocess.run(
+            ['v4l2-ctl', '--list-devices'], capture_output=True, text=True)
+        lines = result.stdout.split('\n')
+        candidates = []
+        in_obsbot = False
+        for line in lines:
+            if 'OBSBOT' in line.upper():
+                in_obsbot = True
+                continue
+            if in_obsbot:
+                stripped = line.strip()
+                if stripped.startswith('/dev/video'):
+                    candidates.append(stripped)
+                elif stripped and not stripped.startswith('/dev/'):
+                    in_obsbot = False
+        
+        for dev in candidates:
+            # Check if it has Video Capture (not just Metadata)
+            try:
+                info = subprocess.run(
+                    ['v4l2-ctl', f'--device={dev}', '--info'],
+                    capture_output=True, text=True, timeout=2)
+                if 'Video Capture' in info.stdout:
+                    idx = int(dev.split('video')[-1])
+                    global_logger.info(f'Detected OBSBOT capture node: {dev} (idx={idx})')
+                    return idx
+            except Exception:
+                pass
+    except Exception:
+        pass
+    
+    # Fallback: search for ANY camera if OBSBOT not found or specific detection failed
+    try:
+        for dev in sorted(_glob.glob('/dev/video*')):
+            try:
+                info = subprocess.run(
+                    ['v4l2-ctl', f'--device={dev}', '--info'],
+                    capture_output=True, text=True, timeout=1)
+                if 'Video Capture' in info.stdout:
+                    idx = int(dev.split('video')[-1])
+                    # Avoid returning virtual device 20 or 10 if possible
+                    if idx not in [10, 20]:
+                        return idx
+            except:
+                pass
+    except:
+        pass
+
+    return 0  # Ultimate fallback to 0
 
 
 class LogEmitter(QObject):
@@ -120,20 +181,6 @@ STYLESHEET = """
 QMainWindow { background-color: #0A0A0C; }
 QWidget { color: #E2E2E2; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; }
 
-/* Docks styling */
-QDockWidget {
-    color: #00E676;
-    font-weight: bold;
-    titlebar-close-icon: url(close.png);
-    titlebar-normal-icon: url(undock.png);
-}
-QDockWidget::title {
-    background-color: rgba(30, 30, 35, 200);
-    padding: 6px;
-    border-radius: 4px;
-    text-align: left;
-}
-
 /* The Taskbar */
 #TaskBar { background-color: rgba(20, 20, 25, 240); border-top: 1px solid #2A2A30; }
 #TaskBar QPushButton {
@@ -146,19 +193,14 @@ QDockWidget::title {
 #TaskBar #StartBtn:hover { background-color: #00E676; }
 #TaskBar #StreamBtn { background-color: #2979FF; color: #FFF; }
 
-/* Plasma Panels */
-.PlasmaPanel {
-    background-color: rgba(26, 26, 30, 230);
-    border: 1px solid #333;
-    border-radius: 12px;
-}
+/* Studio Panels */
+PanelWindow { background-color: #0A0A0C; }
 QGroupBox {
-    #333; border-radius: 8px; margin-top: 18px; background-color: rgba(40, 40, 45, 100);
-    border: 1px solid
+    border: 1px solid #333; border-radius: 8px; margin-top: 18px; background-color: rgba(40, 40, 45, 100);
 }
 QGroupBox::title {
-    #00E676; font-weight: bold; font-size: 15px;
-    subcontrol-origin: margin; subcontrol-position: top left; padding: 0 8px; color:
+    color: #00E676; font-weight: bold; font-size: 15px;
+    subcontrol-origin: margin; subcontrol-position: top left; padding: 0 8px;
 }
 QComboBox, QSpinBox, QTextEdit, QLineEdit, QListWidget {
     background-color: #1E1E24; border: 1px solid #444; border-radius: 6px; padding: 8px; color: #FFFFFF;
@@ -173,21 +215,24 @@ QScrollBar::handle:vertical:hover { background: #00E676; }
 QCheckBox::indicator { width: 18px; height: 18px; border-radius: 4px; border: 1px solid #555; background: #1E1E24; }
 QCheckBox::indicator:checked { background: #00E676; border: 1px solid #00E676; }
 QSplitter::handle { background-color: #2A2A30; width: 2px; }
-
-/* Tab styling for docked widgets */
-QTabBar::tab {
-    background: #1A1A1A;
-    color: #888;
-    padding: 8px 16px;
-    border-top-left-radius: 4px;
-    border-top-right-radius: 4px;
-}
-QTabBar::tab:selected {
-    background: #2A2A2A;
-    color: #00E676;
-    border-bottom: 2px solid #00E676;
-}
 """
+
+class PanelWindow(QWidget):
+    visibility_changed = Signal(bool)
+
+    def __init__(self, title, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setWindowFlags(Qt.WindowType.Tool)
+        self.setObjectName("PanelWindow")
+
+    def closeEvent(self, event):
+        self.visibility_changed.emit(False)
+        super().closeEvent(event)
+
+    def showEvent(self, event):
+        self.visibility_changed.emit(True)
+        super().showEvent(event)
 
 
 class PresetButton(QPushButton):
@@ -206,6 +251,55 @@ class PresetButton(QPushButton):
         super().mousePressEvent(event)
 
 
+class ObsbotConnectThread(QThread):
+    finished = Signal(bool)
+
+    def __init__(self, obsbot, reconnect=False):
+        super().__init__()
+        self.obsbot = obsbot
+        self.reconnect = reconnect
+
+    def run(self):
+        if self.reconnect:
+            self.obsbot.disconnect()
+            success = self.obsbot.connect()
+        else:
+            success = self.obsbot.init() and self.obsbot.connect()
+        self.finished.emit(bool(success))
+
+
+class ClickableVideoLabel(QLabel):
+    single_clicked = Signal(int, int)
+    double_clicked = Signal(int, int)
+    right_clicked = Signal(int, int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.click_timer = QTimer(self)
+        self.click_timer.setSingleShot(True)
+        self.click_timer.setInterval(250)  # 250ms debounce for double click
+        self.click_timer.timeout.connect(self._emit_single_click)
+        self.last_click_pos = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.last_click_pos = (event.position().x(), event.position().y())
+            self.click_timer.start()
+        elif event.button() == Qt.MouseButton.RightButton:
+            self.right_clicked.emit(int(event.position().x()), int(event.position().y()))
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.click_timer.stop()  # Cancel single click
+            self.double_clicked.emit(int(event.position().x()), int(event.position().y()))
+        super().mouseDoubleClickEvent(event)
+
+    def _emit_single_click(self):
+        if self.last_click_pos:
+            self.single_clicked.emit(int(self.last_click_pos[0]), int(self.last_click_pos[1]))
+
+
 class HardwareManager:
     """Manages the lifecycle of hardware resources to prevent leaks."""
 
@@ -222,6 +316,7 @@ class HardwareManager:
         if self.cap.isOpened():
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            self.cap.set(cv2.CAP_PROP_FPS, 100)
             self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(
                 'M', 'J', 'P', 'G'))  # Often better for webcams
         else:
@@ -271,18 +366,22 @@ class HardwareManager:
                     fd = self.fake_cam._video_device
                     if fd > 0:
                         os.close(fd)
-            except:
-                pass
+                        self.fake_cam._video_device = -1
+                        global_logger.info(f"HardwareManager: Successfully closed FD {fd}")
+            except Exception as e:
+                global_logger.error(f"HardwareManager: Error closing FD: {e}")
             self.fake_cam = None
 
     def release_renderer(self):
         if self.renderer:
             global_logger.info("HardwareManager: Releasing renderer")
             try:
-                if hasattr(self.renderer, 'ctx'):
+                if hasattr(self.renderer, 'release'):
+                    self.renderer.release()
+                elif hasattr(self.renderer, 'ctx'):
                     self.renderer.ctx.release()
-            except:
-                pass
+            except Exception as e:
+                global_logger.error(f"HardwareManager: Error releasing renderer: {e}")
             self.renderer = None
 
     def cleanup_all(self):
@@ -298,6 +397,12 @@ class ZenithWorker(QObject):
     raw_pixmap_signal = Signal(QImage)
     status_signal = Signal(str)
     finished = Signal()
+    
+    # New Signals for Ninja Features
+    gesture_detected = Signal(str)
+    nsfw_detected = Signal()
+    broll_trigger = Signal()
+    posture_detected = Signal(str)
 
     def __init__(self, params):
         super().__init__()
@@ -313,6 +418,24 @@ class ZenithWorker(QObject):
         self.last_cy = 0.0
         self._last_zoom = 1.0
         self._last_led = None
+        self.frame_count = 0
+        self.last_crop_rect = None
+
+    def handle_click(self, lx, ly, lw, lh, action):
+        if not self.ptz or not self.last_crop_rect: return
+        cx, cy, cw, ch = self.last_crop_rect
+        # Map label click to source image coordinates
+        source_x = cx + (lx / lw) * cw
+        source_y = cy + (ly / lh) * ch
+
+        if action == "single":
+            self.ptz.set_manual_center(source_x, source_y)
+        elif action == "zoom_in":
+            self.ptz.adjust_zoom(0.5)
+        elif action == "zoom_out":
+            self.ptz.adjust_zoom(-0.5)
+        elif action == "resume":
+            self.ptz.manual_mode = False
 
     @Slot()
     def process(self):
@@ -372,6 +495,13 @@ class ZenithWorker(QObject):
         try:
             self.ml_pipeline = MLPipeline(
                 p['model_path'], hw_config, p['target_class_ids'], p['blur_class_ids'])
+                
+            # Connect ML Pipeline callbacks to ZenithWorker signals
+            self.ml_pipeline.gesture_callback = self.gesture_detected.emit
+            self.ml_pipeline.nsfw_callback = self.nsfw_detected.emit
+            self.ml_pipeline.broll_callback = self.broll_trigger.emit
+            self.ml_pipeline.pose_callback = self.posture_detected.emit
+            
             self.ml_pipeline.start()
         except Exception as e:
             self.status_signal.emit(f"ML Pipeline Error: {e}")
@@ -394,6 +524,8 @@ class ZenithWorker(QObject):
             ret, frame = self.hw.cap.read()
             if not ret:
                 break
+            
+            self.frame_count += 1
 
             # 16:9 Normalize
             h, w = frame.shape[:2]
@@ -416,7 +548,19 @@ class ZenithWorker(QObject):
             self.ptz.margin_percentage = p['zoom_margin'] / 100.0
 
             zoom_boxes, blur_boxes = self.ml_pipeline.process_frame(frame)
-            crop_rect = self.ptz.update(zoom_boxes)
+            
+            if not p['hold_ptz']:
+                crop_rect = self.ptz.update(zoom_boxes)
+            else:
+                # If hold is active, keep using the last valid crop_rect
+                # but we still need an initial value if we started on Hold
+                if not hasattr(self, 'last_crop_rect') or self.last_crop_rect is None:
+                    # Default to full frame if no previous rect
+                    crop_rect = (0, 0, cam_w, cam_h)
+                else:
+                    crop_rect = self.last_crop_rect
+            
+            self.last_crop_rect = crop_rect
 
             # SDK Interaction
             obs = p['obsbot']
@@ -468,48 +612,62 @@ class ZenithWorker(QObject):
 
     def _handle_obsbot(self, obs, zoom_boxes, blur_boxes, cam_w, cam_h, p):
         now = time.time()
-        if zoom_boxes and (now - self.last_ptz_time > 0.15):
-            min_x = min(b[0] for b in zoom_boxes)
-            min_y = min(b[1] for b in zoom_boxes)
-            max_x = max(b[0] + b[2] for b in zoom_boxes)
-            max_y = max(b[1] + b[3] for b in zoom_boxes)
+        
+        # If HOLD is active, skip all automatic tracking and applying speed.
+        if p['hold_ptz']:
+            # We already set speed to 0 when hold was toggled, but good to ensure
+            # we also apply manual zoom if it's changing
+            if abs(self._last_zoom - p['manual_zoom']) > 0.01:
+                obs.set_zoom(p['manual_zoom'])
+                self._last_zoom = p['manual_zoom']
+            return
 
-            if p['enable_onboard_tracker']:
-                obs.set_track_target(
-                    float(min_x/cam_w), float(min_y/cam_h), float(max_x/cam_w), float(max_y/cam_h))
-            else:
-                cx, cy = ((min_x + max_x) / 2) / cam_w - \
-                    0.5, ((min_y + max_y) / 2) / cam_h - 0.5
-                dt = max(0.01, now - self.last_ptz_time)
-                dcx, dcy = (cx - self.last_cx) / dt, (cy - self.last_cy) / dt
-                self.last_cx, self.last_cy = cx, cy
-                zs = self._last_zoom
-                kp_p, kd_p = (60.0 + (p['smooth_factor'] * 80.0)) / \
-                    zs, (5.0 + (p['smooth_factor'] * 15.0)) / zs
-                kp_t, kd_t = (40.0 + (p['smooth_factor'] * 40.0)) / \
-                    zs, (3.0 + (p['smooth_factor'] * 10.0)) / zs
-                ps = float(np.clip(cx * kp_p + dcx * kd_p, -
-                           60.0, 60.0)) if abs(cx) > 0.05 else 0.0
-                ts = float(np.clip(cy * kp_t + dcy * kd_t, -
-                           40.0, 40.0)) if abs(cy) > 0.05 else 0.0
-                obs.set_gimbal_speed(ts, ps)
-
-            self.last_ptz_time = now
-            sm = max((max_x - min_x) / cam_w, (max_y - min_y) / cam_h)
-            if sm > 0:
-                tz = np.clip(0.4 / sm, 1.0, 2.0)
-                zv = p['smooth_factor'] * tz + \
-                    (1 - p['smooth_factor']) * self._last_zoom
-                if abs(self._last_zoom - zv) > 0.01:
-                    obs.set_zoom(zv)
-                    self._last_zoom = zv
-        elif not zoom_boxes and not p['enable_onboard_tracker']:
-            obs.set_gimbal_speed(0.0, 0.0)
-
-        should_led = len(blur_boxes) > 0
-        if self._last_led != should_led:
-            obs.set_led(should_led)
-            self._last_led = should_led
+        try:
+            if zoom_boxes and (now - self.last_ptz_time > 0.15):
+                min_x = min(b[0] for b in zoom_boxes)
+                min_y = min(b[1] for b in zoom_boxes)
+                max_x = max(b[0] + b[2] for b in zoom_boxes)
+                max_y = max(b[1] + b[3] for b in zoom_boxes)
+    
+                if p['enable_onboard_tracker']:
+                    obs.set_track_target(
+                        float(min_x/cam_w), float(min_y/cam_h), float(max_x/cam_w), float(max_y/cam_h))
+                else:
+                    cx, cy = ((min_x + max_x) / 2) / cam_w - \
+                        0.5, ((min_y + max_y) / 2) / cam_h - 0.5
+                    dt = max(0.01, now - self.last_ptz_time)
+                    dcx, dcy = (cx - self.last_cx) / dt, (cy - self.last_cy) / dt
+                    self.last_cx, self.last_cy = cx, cy
+                    zs = self._last_zoom
+                    kp_p, kd_p = (60.0 + (p['smooth_factor'] * 80.0)) / \
+                        zs, (5.0 + (p['smooth_factor'] * 15.0)) / zs
+                    kp_t, kd_t = (40.0 + (p['smooth_factor'] * 40.0)) / \
+                        zs, (3.0 + (p['smooth_factor'] * 10.0)) / zs
+                    ps = float(np.clip(cx * kp_p + dcx * kd_p, -
+                               60.0, 60.0)) if abs(cx) > 0.05 else 0.0
+                    ts = float(np.clip(cy * kp_t + dcy * kd_t, -
+                               40.0, 40.0)) if abs(cy) > 0.05 else 0.0
+                    obs.set_gimbal_speed(ts, ps)
+    
+                self.last_ptz_time = now
+                sm = max((max_x - min_x) / cam_w, (max_y - min_y) / cam_h)
+                if sm > 0:
+                    tz = np.clip(0.4 / sm, 1.0, 2.0)
+                    zv = p['smooth_factor'] * tz + \
+                        (1 - p['smooth_factor']) * self._last_zoom
+                    if abs(self._last_zoom - zv) > 0.01:
+                        obs.set_zoom(zv)
+                        self._last_zoom = zv
+            elif not zoom_boxes and not p['enable_onboard_tracker']:
+                obs.set_gimbal_speed(0.0, 0.0)
+    
+            should_led = len(blur_boxes) > 0
+            if self._last_led != should_led:
+                obs.set_led(should_led)
+                self._last_led = should_led
+        except Exception as e:
+            global_logger.error(f"OBSBOT Hardware SDK Error: {e}")
+            obs.connected = False
 
     def _to_qt(self, img):
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -520,25 +678,23 @@ class ZenithWorker(QObject):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("ZenithCam: Plasma Environment")
-        self.setMinimumSize(800, 600)
-        self.resize(1280, 720)
-
-        # Dock Options
-        self.setDockOptions(QMainWindow.DockOption.AnimatedDocks |
-                            QMainWindow.DockOption.AllowTabbedDocks |
-                            QMainWindow.DockOption.AllowNestedDocks)
+        self.setWindowTitle("ZenithCam: Control Hub")
+        self.setMinimumSize(1, 1)
+        self.resize(600, 800)
 
         self.presets = {"Home": (0, 0, 1.0), "P1": (
             0, 0, 1.0), "P2": (0, 0, 1.0)}
 
         # Tracking Parameters
+        self.wb_worker = None
         self.params = {
             'input_source': 1,
             'output_device': "/dev/video20",
             'model_path': os.path.join(os.path.dirname(__file__), "models/erax_nsfw_yolo11n.onnx"),
             'target_class_ids': [3, 4],
             'blur_class_ids': [99],
+            'nsfw_classes': [0, 1, 2], # Assuming classes 0,1,2 are NSFW (make_love, etc.)
+            'safe_zone': [0.1, 0.1, 0.9, 0.9], # 10% margin on all sides
             'smooth_factor': 0.02,
             'zoom_margin': 45,
             'output_width': 1280,
@@ -547,9 +703,12 @@ class MainWindow(QMainWindow):
             'draw_output_roi': False,
             'flip_video': False,
             'show_input_preview': True,
+            'blur_type': 'pixelate',
             'show_output_preview': True,
             'enable_physical_ptz': False,
             'enable_onboard_tracker': False,
+            'hold_ptz': False,
+            'manual_zoom': 1.0,
             'obsbot': None,
             'rtmp_url': "rtmp://localhost:1935/live",
             'stream_key': "test",
@@ -559,32 +718,29 @@ class MainWindow(QMainWindow):
         self.stream_process = None
 
         self.obsbot = OBSBOTSDK()
-        if self.obsbot.init() and self.obsbot.connect():
-            global_logger.info("Connected to OBSBOT SDK")
-            self.obsbot.set_ai_mode(0)
-            self.params['obsbot'] = self.obsbot
-        else:
-            global_logger.warning(
-                "OBSBOT SDK connection failed. Retry via UI.")
+        self.params['obsbot'] = self.obsbot
+        QTimer.singleShot(100, self.async_init_obsbot)
 
         self.worker = None
         self.thread = None
+        self.is_tracking = False
+        self.is_shutting_down = False
+        self.is_transitioning = False
 
-        # Central widget is just a placeholder to allow docking
-        self.central_placeholder = QWidget()
-        self.setCentralWidget(self.central_placeholder)
-        self.central_placeholder.setMaximumSize(
-            0, 0)  # Hide it, use docks for everything
+        # Initialize Web Bridge for Tampermonkey integration
+        
+        # Telemetry Timer
+        self.telemetry_timer = QTimer(self)
+        self.telemetry_timer.timeout.connect(self._broadcast_telemetry)
+        self.telemetry_timer.start(500)
+
+        self.panels = {}
 
         # --- PANEL 1: CONFIG ---
-        self.config_dock = QDockWidget("⚙️ Config (Drag to Reorder)", self)
-        self.config_dock.setObjectName("ConfigDock")
-        self.config_dock.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
-        self.config_dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable |
-                                     QDockWidget.DockWidgetFeature.DockWidgetFloatable | QDockWidget.DockWidgetFeature.DockWidgetClosable)
-
-        config_content = QWidget()
-        config_layout = QVBoxLayout(config_content)
+        self.config_window = PanelWindow("⚙️ Config", self)
+        self.config_window.resize(400, 750)
+        self.panels["config"] = self.config_window
+        config_layout = QVBoxLayout(self.config_window)
 
         self.settings_scroll = QScrollArea()
         self.settings_scroll.setWidgetResizable(True)
@@ -593,15 +749,28 @@ class MainWindow(QMainWindow):
         settings_container = QWidget()
         settings_layout = QVBoxLayout(settings_container)
 
+        preset_group = QGroupBox("Presets / Tags")
+        preset_layout = QHBoxLayout(preset_group)
+        self.preset_combo = QComboBox()
+        self.preset_combo.setEditable(True)
+        self.preset_combo.lineEdit().setPlaceholderText("Enter tag name...")
+        self.preset_combo.currentIndexChanged.connect(self.on_preset_selected)
+        btn_save_preset = QPushButton("Save")
+        btn_save_preset.clicked.connect(self.save_current_preset)
+        btn_del_preset = QPushButton("Del")
+        btn_del_preset.clicked.connect(self.delete_current_preset)
+        preset_layout.addWidget(self.preset_combo, stretch=1)
+        preset_layout.addWidget(btn_save_preset)
+        preset_layout.addWidget(btn_del_preset)
+        settings_layout.addWidget(preset_group)
+
         conf_group = QGroupBox("Device Settings")
         group_layout = QVBoxLayout(conf_group)
 
         cam_row = QHBoxLayout()
         cam_row.addWidget(QLabel("Input Camera:"))
         self.input_spin = QSpinBox()
-        obs_dev = find_obsbot_device()
-        def_idx = int(obs_dev.split("video")
-                      [-1]) if obs_dev and "video" in obs_dev else 1
+        def_idx = 1  # Will be auto-detected on engine start via find_obsbot_capture_index()
         self.input_spin.setValue(def_idx)
         cam_row.addWidget(self.input_spin)
         group_layout.addLayout(cam_row)
@@ -666,39 +835,35 @@ class MainWindow(QMainWindow):
         settings_layout.addStretch()
         self.settings_scroll.setWidget(settings_container)
         config_layout.addWidget(self.settings_scroll)
-        self.config_dock.setWidget(config_content)
-        self.addDockWidget(
-            Qt.DockWidgetArea.LeftDockWidgetArea, self.config_dock)
 
         # --- PANEL 2: INPUT PREVIEW ---
-        self.input_preview_dock = QDockWidget("📸 Raw Camera Feed", self)
-        self.input_preview_dock.setObjectName("InputPreviewDock")
-        self.input_preview_group = QGroupBox()
-        in_l = QVBoxLayout(self.input_preview_group)
+        self.input_preview_window = PanelWindow("📸 Raw Camera Feed", self)
+        self.input_preview_window.resize(640, 360)
+        self.panels["raw"] = self.input_preview_window
+        in_l = QVBoxLayout(self.input_preview_window)
         self.input_preview_label = QLabel("Waiting for camera...")
-        self.input_preview_label.setMinimumSize(320, 180)
+        self.input_preview_label.setMinimumSize(1, 1)
         self.input_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         in_l.addWidget(self.input_preview_label)
-        self.input_preview_dock.setWidget(self.input_preview_group)
-        self.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea,
-                           self.input_preview_dock)
 
         # --- PANEL 3: OUTPUT PREVIEW ---
-        self.output_preview_dock = QDockWidget("🧠 AI Processed View", self)
-        self.output_preview_dock.setObjectName("OutputPreviewDock")
-        self.output_preview_group = QGroupBox()
-        out_l = QVBoxLayout(self.output_preview_group)
-        self.output_preview_label = QLabel("Waiting for AI processing...")
-        self.output_preview_label.setMinimumSize(320, 180)
+        self.output_preview_window = PanelWindow("🧠 AI Processed View", self)
+        self.output_preview_window.resize(800, 450)
+        self.panels["ai"] = self.output_preview_window
+        out_l = QVBoxLayout(self.output_preview_window)
+        self.output_preview_label = ClickableVideoLabel("Waiting for AI processing...")
+        self.output_preview_label.setMinimumSize(1, 1)
         self.output_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.output_preview_label.single_clicked.connect(self.on_output_single_click)
+        self.output_preview_label.double_clicked.connect(self.on_output_double_click)
+        self.output_preview_label.right_clicked.connect(self.on_output_right_click)
         out_l.addWidget(self.output_preview_label)
-        self.output_preview_dock.setWidget(self.output_preview_group)
-        self.splitDockWidget(self.input_preview_dock,
-                             self.output_preview_dock, Qt.Orientation.Vertical)
 
         # --- PANEL 4: STREAMING ---
-        self.streaming_dock = QDockWidget("📡 Plasma Broadcast", self)
-        self.streaming_dock.setObjectName("StreamingDock")
+        self.streaming_window = PanelWindow("📡 Broadcast Engine", self)
+        self.streaming_window.resize(450, 500)
+        self.panels["stream"] = self.streaming_window
+        stream_layout = QVBoxLayout(self.streaming_window)
 
         # Profile Management & Streaming
         self.profiles_file = os.path.join(
@@ -706,9 +871,6 @@ class MainWindow(QMainWindow):
         self.stream_profiles = []
         self.load_profiles()
         self.active_streams = []
-
-        stream_content = QWidget()
-        stream_layout = QVBoxLayout(stream_content)
 
         prof_row1 = QHBoxLayout()
         self.profile_combo = QComboBox()
@@ -757,6 +919,12 @@ class MainWindow(QMainWindow):
             ["Fast/WiFi (3000 kbps)", "Medium (4500 kbps)", "High/Ethernet (6000 kbps)"])
         self.bitrate_combo.setCurrentIndex(0)
         br_layout.addWidget(self.bitrate_combo)
+        
+        br_layout.addWidget(QLabel("Encoder:"))
+        self.encoder_combo = QComboBox()
+        self.encoder_combo.addItems(["CPU (x264)", "NVIDIA (NVENC)", "AMD/Intel (VA-API)"])
+        self.encoder_combo.setCurrentIndex(0)
+        br_layout.addWidget(self.encoder_combo)
         stream_layout.addLayout(br_layout)
 
         stream_layout.addWidget(QLabel("Simultaneous Streaming (Max 3):"))
@@ -773,21 +941,35 @@ class MainWindow(QMainWindow):
         stream_layout.addWidget(self.stream_btn)
         stream_layout.addStretch()
 
-        self.streaming_dock.setWidget(stream_content)
-        self.addDockWidget(
-            Qt.DockWidgetArea.RightDockWidgetArea, self.streaming_dock)
-
         # --- PANEL 5: PTZ ---
-        self.ptz_dock = QDockWidget("🕹️ PTZ Controls", self)
-        self.ptz_dock.setObjectName("PTZDock")
-        ptz_content = QWidget()
-        ptz_layout = QVBoxLayout(ptz_content)
+        self.ptz_window = PanelWindow("🕹️ PTZ Controls", self)
+        self.ptz_window.resize(400, 600)
+        self.panels["ptz"] = self.ptz_window
+        ptz_layout = QVBoxLayout(self.ptz_window)
 
         hardware_group = QGroupBox("Robot Control")
         hw_layout = QVBoxLayout(hardware_group)
         self.reconnect_obsbot_btn = QPushButton("🔌 Connect OBSBOT")
         self.reconnect_obsbot_btn.clicked.connect(self.reconnect_obsbot)
         hw_layout.addWidget(self.reconnect_obsbot_btn)
+
+        # Bluetooth Controls
+        bt_row = QHBoxLayout()
+        self.use_bt_cb = QCheckBox("Bluetooth Mode")
+        self.use_bt_cb.stateChanged.connect(self.toggle_bluetooth_mode)
+        self.scan_bt_btn = QPushButton("🔍 Scan")
+        self.scan_bt_btn.setFixedWidth(60)
+        self.scan_bt_btn.setEnabled(False)
+        self.scan_bt_btn.clicked.connect(self.scan_bluetooth)
+        bt_row.addWidget(self.use_bt_cb)
+        bt_row.addWidget(self.scan_bt_btn)
+        hw_layout.addLayout(bt_row)
+
+        self.bt_device_combo = QComboBox()
+        self.bt_device_combo.setPlaceholderText("Select Bluetooth Camera...")
+        self.bt_device_combo.setVisible(False)
+        self.bt_device_combo.currentIndexChanged.connect(self.connect_bluetooth_device)
+        hw_layout.addWidget(self.bt_device_combo)
 
         self.ptz_cb = QCheckBox("Enable Physical PTZ")
         self.ptz_cb.stateChanged.connect(self.toggle_ptz)
@@ -823,6 +1005,18 @@ class MainWindow(QMainWindow):
 
         manual_group = QGroupBox("Manual Movement")
         manual_layout = QVBoxLayout(manual_group)
+
+        self.hold_ptz_cb = QCheckBox("HOLD CAMERA (Lock)")
+        self.hold_ptz_cb.setStyleSheet("color: #FF5252; font-weight: bold;")
+        self.hold_ptz_cb.stateChanged.connect(self.toggle_hold_ptz)
+        manual_layout.addWidget(self.hold_ptz_cb)
+
+        manual_layout.addWidget(QLabel("Manual Zoom Override:"))
+        self.manual_zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self.manual_zoom_slider.setRange(10, 20) # 1.0x to 2.0x
+        self.manual_zoom_slider.setValue(10)
+        self.manual_zoom_slider.valueChanged.connect(self.update_manual_zoom)
+        manual_layout.addWidget(self.manual_zoom_slider)
 
         p_row = QHBoxLayout()
         for p_name in ["Home", "P1", "P2"]:
@@ -878,41 +1072,126 @@ class MainWindow(QMainWindow):
         ptz_layout.addWidget(manual_group)
         ptz_layout.addStretch()
 
-        self.ptz_dock.setWidget(ptz_content)
-        self.addDockWidget(
-            Qt.DockWidgetArea.RightDockWidgetArea, self.ptz_dock)
-        self.tabifyDockWidget(self.streaming_dock, self.ptz_dock)
+        # --- PANEL 6: HARDWARE DASHBOARD ---
+        self.hw_window = PanelWindow("📊 System Dashboard", self)
+        self.hw_window.resize(600, 800)
+        self.panels["hw"] = self.hw_window
+        hw_l = QVBoxLayout(self.hw_window)
+        
+        self.hw_cpu_label = QLabel("CPU Usage: --%")
+        self.hw_ram_label = QLabel("RAM Usage: --%")
+        self.hw_fps_label = QLabel("Output FPS: --")
+        
+        hw_l.addWidget(self.hw_cpu_label)
+        hw_l.addWidget(self.hw_ram_label)
+        hw_l.addWidget(self.hw_fps_label)
+
+        # --- PANEL 7: STUDIO EFFECTS ---
+        self.effects_window = PanelWindow("✨ Studio Effects", self)
+        self.effects_window.resize(400, 400)
+        self.panels["effects"] = self.effects_window
+        effects_layout = QVBoxLayout(self.effects_window)
+        
+        visual_group = QGroupBox("Visual Shaders")
+        v_layout = QVBoxLayout(visual_group)
+        v_layout.addWidget(QLabel("Privacy Mask Style:"))
+        self.shader_combo = QComboBox()
+        self.shader_combo.addItems(["Gaussian Blur", "8-Bit Pixelation", "Cyber-Glitch", "Neon Edge-Glow"])
+        self.shader_combo.setCurrentIndex(1)
+        self.shader_combo.currentIndexChanged.connect(self.update_shader_style)
+        v_layout.addWidget(self.shader_combo)
+        
+        v_layout.addWidget(QLabel("Stream Interactivity:"))
+        self.hype_train_cb = QCheckBox("Hype Train Camera Shake (Tips)")
+        self.fps_mouse_cb = QCheckBox("FPS-Style Mouse Look (Hold Alt)")
+        v_layout.addWidget(self.hype_train_cb)
+        v_layout.addWidget(self.fps_mouse_cb)
+        
+        v_layout.addWidget(QLabel("AI Automation:"))
+        self.posture_cb = QCheckBox("Posture-Triggered PTZ (Sit/Stand)")
+        self.idle_wander_cb = QCheckBox("Idle Auto-Pilot (Wander)")
+        v_layout.addWidget(self.posture_cb)
+        v_layout.addWidget(self.idle_wander_cb)
+        
+        effects_layout.addWidget(visual_group)
+        effects_layout.addStretch()
+        
+        # --- PANEL 8: LIVE CHAT ---
+        self.chat_window = PanelWindow("💬 Live Chat", self)
+        self.chat_window.resize(400, 600)
+        self.panels["chat"] = self.chat_window
+        chat_layout = QVBoxLayout(self.chat_window)
+        self.chat_list = QListWidget()
+        self.chat_list.setStyleSheet("background-color: #1A1A1D; border: none;")
+        self.chat_list.addItem("System: Unified Chat Aggregator initialized.")
+        self.chat_list.addItem("System: Waiting for browser web hook...")
+        chat_layout.addWidget(self.chat_list)
+
+        # --- PANEL 9: DEBUG LOGS ---
+        self.debug_window = PanelWindow("📝 Logs", self)
+        self.debug_window.resize(600, 400)
+        self.panels["debug"] = self.debug_window
+        debug_l = QVBoxLayout(self.debug_window)
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        debug_l.addWidget(self.log_text)
 
         # --- BOTTOM TASKBAR ---
         self.taskbar = QWidget()
         self.taskbar.setObjectName("TaskBar")
-        self.taskbar.setFixedHeight(60)
-        taskbar_layout = QHBoxLayout(self.taskbar)
-        taskbar_layout.setContentsMargins(20, 0, 20, 0)
+        taskbar_layout = QVBoxLayout(self.taskbar)
+        taskbar_layout.setContentsMargins(15, 15, 15, 15)
+        taskbar_layout.setSpacing(10)
+        
+        header_layout = QHBoxLayout()
+        toggles_layout = QGridLayout()
+        options_layout = QHBoxLayout()
 
         self.app_menu_btn = QPushButton("💠")
-        self.app_menu_btn.setStyleSheet("font-size: 20px; color: #00E676;")
+        self.app_menu_btn.setStyleSheet("font-size: 24px; color: #00E676; padding: 5px 15px;")
         self.app_menu_btn.clicked.connect(self.show_launcher_menu)
-        taskbar_layout.addWidget(self.app_menu_btn)
-        taskbar_layout.addSpacing(10)
+        header_layout.addWidget(self.app_menu_btn)
+        header_layout.addStretch()
 
-        # Taskbar buttons to toggle docks
-        def create_toggle(label, dock):
+        # Clock and System Info
+        self.clock_label = QLabel()
+        self.clock_label.setStyleSheet(
+            "color: #AAA; font-weight: bold; font-family: monospace; margin-right: 10px;")
+        header_layout.addWidget(self.clock_label)
+
+        self.clock_timer = QTimer(self)
+        self.clock_timer.timeout.connect(self.update_clock)
+        self.clock_timer.start(1000)
+        self.update_clock()
+        
+        self.status_label = QLabel("Status: Idle")
+        self.status_label.setStyleSheet(
+            "color: #00E676; font-weight: bold; margin-right: 15px;")
+        header_layout.addWidget(self.status_label)
+
+        self.start_btn = QPushButton("▶ START ENGINE")
+        self.start_btn.setObjectName("StartBtn")
+        self.start_btn.clicked.connect(self.toggle_tracking)
+        header_layout.addWidget(self.start_btn)
+
+        # Taskbar buttons to toggle windows
+        def create_toggle(label, window_key):
+            window = self.panels[window_key]
             btn = QPushButton(label)
             btn.setCheckable(True)
-            btn.setChecked(True)
-            btn.toggled.connect(dock.setVisible)
-            dock.visibilityChanged.connect(btn.setChecked)
+            btn.setChecked(window.isVisible())
+            btn.toggled.connect(window.setVisible)
+            window.visibility_changed.connect(btn.setChecked)
             return btn
 
-        taskbar_layout.addWidget(create_toggle("⚙️ Config", self.config_dock))
-        taskbar_layout.addWidget(create_toggle(
-            "📸 Raw Feed", self.input_preview_dock))
-        taskbar_layout.addWidget(create_toggle(
-            "🧠 AI Feed", self.output_preview_dock))
-        taskbar_layout.addWidget(create_toggle(
-            "📡 Streaming", self.streaming_dock))
-        taskbar_layout.addWidget(create_toggle("🕹️ PTZ", self.ptz_dock))
+        toggles_layout.addWidget(create_toggle("⚙️ Config", "config"), 0, 0)
+        toggles_layout.addWidget(create_toggle("📊 Sys", "hw"), 0, 1)
+        toggles_layout.addWidget(create_toggle("📸 Raw", "raw"), 0, 2)
+        toggles_layout.addWidget(create_toggle("🧠 AI", "ai"), 0, 3)
+        toggles_layout.addWidget(create_toggle("🕹️ PTZ", "ptz"), 1, 0)
+        toggles_layout.addWidget(create_toggle("✨ FX", "effects"), 1, 1)
+        toggles_layout.addWidget(create_toggle("💬 Chat", "chat"), 1, 2)
+        toggles_layout.addWidget(create_toggle("📡 Stream", "stream"), 1, 3)
 
         self.preview_roi_cb = QCheckBox("ROI")
         self.preview_roi_cb.setChecked(True)
@@ -921,64 +1200,39 @@ class MainWindow(QMainWindow):
         self.output_roi_cb.stateChanged.connect(self.update_toggles)
         self.flip_cb = QCheckBox("Flip")
         self.flip_cb.stateChanged.connect(self.update_toggles)
+        
         self.debug_cb = QCheckBox("Debug")
-        self.debug_cb.stateChanged.connect(self.toggle_debug)
+        self.debug_cb.stateChanged.connect(lambda state: self.panels["debug"].setVisible(bool(state)))
+        self.panels["debug"].visibility_changed.connect(self.debug_cb.setChecked)
 
-        taskbar_layout.addSpacing(20)
-        taskbar_layout.addWidget(self.preview_roi_cb)
-        taskbar_layout.addWidget(self.output_roi_cb)
-        taskbar_layout.addWidget(self.flip_cb)
-        taskbar_layout.addWidget(self.debug_cb)
-        taskbar_layout.addStretch()
+        options_layout.addWidget(self.preview_roi_cb)
+        options_layout.addWidget(self.output_roi_cb)
+        options_layout.addWidget(self.flip_cb)
+        options_layout.addWidget(self.debug_cb)
+        options_layout.addStretch()
 
-        # Clock and System Info
-        self.clock_label = QLabel()
-        self.clock_label.setStyleSheet(
-            "color: #AAA; font-weight: bold; font-family: monospace; margin-right: 10px;")
-        taskbar_layout.insertWidget(
-            taskbar_layout.count() - 2, self.clock_label)
+        taskbar_layout.addLayout(header_layout)
+        taskbar_layout.addLayout(toggles_layout)
+        taskbar_layout.addLayout(options_layout)
 
-        self.clock_timer = QTimer(self)
-        self.clock_timer.timeout.connect(self.update_clock)
-        self.clock_timer.start(1000)
-        self.update_clock()
-        self.status_label = QLabel("Status: Idle")
-        self.status_label.setStyleSheet(
-            "color: #00E676; font-weight: bold; margin-right: 15px;")
-        taskbar_layout.addWidget(self.status_label)
-
-        self.start_btn = QPushButton("▶ START ENGINE")
-        self.start_btn.setObjectName("StartBtn")
-        self.start_btn.clicked.connect(self.toggle_tracking)
-        taskbar_layout.addWidget(self.start_btn)
-
-        # Add taskbar to bottom
-        self.setMenuWidget(None)  # Make sure no standard menu bar
-
-        # We use a container for the bottom because QMainWindow layout is tricky
-        main_container = QWidget()
-        self.main_vlayout = QVBoxLayout(main_container)
-        self.main_vlayout.setContentsMargins(0, 0, 0, 0)
-        self.main_vlayout.setSpacing(0)
-
-        # We need to move the dock manager area into the layout or just let QMainWindow handle it
-        # Actually, QMainWindow handles docks automatically around the central widget.
-        # So we just add the taskbar to the bottom of the window manually.
-
-        self.addToolBar(Qt.ToolBarArea.BottomToolBarArea,
-                        self.wrap_in_toolbar(self.taskbar))
-
-        self.debug_container = QGroupBox("Debug Logs")
-        debug_l = QVBoxLayout(self.debug_container)
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        debug_l.addWidget(self.log_text)
-        self.debug_dock = QDockWidget("📝 Logs", self)
-        self.debug_dock.setObjectName("DebugDock")
-        self.debug_dock.setWidget(self.debug_container)
-        self.addDockWidget(
-            Qt.DockWidgetArea.BottomDockWidgetArea, self.debug_dock)
-        self.debug_dock.setVisible(False)
+        central_container = QWidget()
+        central_layout = QVBoxLayout(central_container)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.addWidget(self.taskbar)
+        central_layout.addStretch()
+        self.setCentralWidget(central_container)
+        
+        # Hardware Update Timer
+        self.hw_timer = QTimer(self)
+        self.hw_timer.timeout.connect(self.update_hardware_stats)
+        self.hw_timer.start(1000)
+        self.last_frame_count = 0
+        
+        # Idle Auto-Pilot Timer
+        self.idle_timer = QTimer(self)
+        self.idle_timer.setInterval(5 * 60 * 1000) # 5 Minutes
+        self.idle_timer.timeout.connect(self.trigger_idle_wander)
+        self.idle_timer.start()
 
         self.update_classes({0: "anus", 1: "action_zoom",
                             2: "nipple", 3: "penis", 4: "vagina", 99: "face"})
@@ -987,18 +1241,206 @@ class MainWindow(QMainWindow):
         self.move_data = {"pan": 0, "tilt": 0, "zoom": 0, "start_time": 0}
         qt_handler.emitter.log_signal.connect(self.append_log)
         self.init_tray()
+        
+        self.app_settings_file = os.path.join(os.path.dirname(__file__), "settings.json")
+        self.app_settings = {}
+        self.load_app_settings()
+        
+        # Restore Window Geometry and Dock States (Niri Window Style)
+        self.settings = QSettings("ZenithCam", "NiriStudio")
+        
+        main_w = self.settings.value("main_w", type=int)
+        main_h = self.settings.value("main_h", type=int)
+        if main_w and main_h:
+            self.resize(main_w, main_h)
+        elif self.settings.value("default_main_w", type=int):
+            self.resize(self.settings.value("default_main_w", type=int), self.settings.value("default_main_h", type=int))
+            
+        for key, window in self.panels.items():
+            w = self.settings.value(f"{key}_w", type=int)
+            h = self.settings.value(f"{key}_h", type=int)
+            if w and h:
+                window.resize(w, h)
+            else:
+                dw = self.settings.value(f"default_{key}_w", type=int)
+                dh = self.settings.value(f"default_{key}_h", type=int)
+                if dw and dh:
+                    window.resize(dw, dh)
+                    
+            # Restore module visibility state
+            vis_val = self.settings.value(f"{key}_visible")
+            if vis_val is not None:
+                window.setVisible(str(vis_val).lower() == 'true')
+            else:
+                # Fallback to saved default or fresh install logic
+                def_vis = self.settings.value(f"default_{key}_visible")
+                if def_vis is not None:
+                    window.setVisible(str(def_vis).lower() == 'true')
+                else:
+                    if key in ["config", "hw"]:
+                        window.setVisible(True)
+                    else:
+                        window.setVisible(False)
+        
         global_logger.info("Application initialized.")
 
-    def wrap_in_toolbar(self, widget):
-        from PyQt6.QtWidgets import QToolBar
-        tb = QToolBar()
-        tb.setMovable(False)
-        tb.addWidget(widget)
-        tb.setStyleSheet("background: transparent; border: none;")
-        return tb
+    def load_app_settings(self):
+        try:
+            if os.path.exists(self.app_settings_file):
+                with open(self.app_settings_file, 'r') as f:
+                    self.app_settings = json.load(f)
+            else:
+                self.app_settings = {"default": self.params.copy()}
+                
+            self.preset_combo.blockSignals(True)
+            self.preset_combo.clear()
+            self.preset_combo.addItems(self.app_settings.keys())
+            self.preset_combo.blockSignals(False)
+            
+            # Load default or first available if no default
+            tag_to_load = "default" if "default" in self.app_settings else list(self.app_settings.keys())[0]
+            self.preset_combo.setCurrentText(tag_to_load)
+            self.on_preset_selected(tag_to_load)
+        except Exception as e:
+            global_logger.error(f"Failed to load settings: {e}")
+
+    def save_current_preset(self):
+        tag = self.preset_combo.currentText().strip()
+        if not tag:
+            tag = "default"
+        
+        # Build current settings dict
+        current_settings = {
+            'input_source': self.input_spin.value(),
+            'output_device': self.output_edit.currentText(),
+            'model_path': self.params.get('model_path', ""),
+            'target_class_ids': self.params.get('target_class_ids', []),
+            'blur_class_ids': self.params.get('blur_class_ids', []),
+            'smooth_factor': self.smooth_slider.value() / 100.0,
+            'zoom_margin': self.margin_spin.value(),
+            'enable_physical_ptz': self.ptz_cb.isChecked(),
+            'enable_onboard_tracker': self.onboard_tracker_cb.isChecked(),
+            'draw_preview_roi': self.preview_roi_cb.isChecked(),
+            'draw_output_roi': self.output_roi_cb.isChecked(),
+            'flip_video': self.flip_cb.isChecked(),
+            'stream_encoder': self.encoder_combo.currentIndex(),
+            'stream_quality': self.bitrate_combo.currentIndex()
+        }
+        
+        self.app_settings[tag] = current_settings
+        try:
+            with open(self.app_settings_file, 'w') as f:
+                json.dump(self.app_settings, f, indent=4)
+            global_logger.info(f"Saved preset: {tag}")
+            
+            # Refresh combo box
+            self.preset_combo.blockSignals(True)
+            self.preset_combo.clear()
+            self.preset_combo.addItems(self.app_settings.keys())
+            self.preset_combo.setCurrentText(tag)
+            self.preset_combo.blockSignals(False)
+        except Exception as e:
+            global_logger.error(f"Failed to save settings: {e}")
+
+    def delete_current_preset(self):
+        tag = self.preset_combo.currentText().strip()
+        if tag and tag in self.app_settings and tag != "default":
+            del self.app_settings[tag]
+            try:
+                with open(self.app_settings_file, 'w') as f:
+                    json.dump(self.app_settings, f, indent=4)
+                global_logger.info(f"Deleted preset: {tag}")
+                self.preset_combo.blockSignals(True)
+                self.preset_combo.clear()
+                self.preset_combo.addItems(self.app_settings.keys())
+                self.preset_combo.setCurrentText("default")
+                self.preset_combo.blockSignals(False)
+                self.on_preset_selected("default")
+            except Exception as e:
+                global_logger.error(f"Failed to delete preset: {e}")
+
+    def on_preset_selected(self, tag):
+        if isinstance(tag, int):
+            tag = self.preset_combo.currentText()
+            
+        if tag in self.app_settings:
+            settings = self.app_settings[tag]
+            
+            # Update UI elements
+            if 'input_source' in settings:
+                self.input_spin.setValue(settings['input_source'])
+            if 'output_device' in settings:
+                self.output_edit.setCurrentText(settings['output_device'])
+            if 'model_path' in settings:
+                self.params['model_path'] = settings['model_path']
+            if 'smooth_factor' in settings:
+                self.smooth_slider.setValue(int(settings['smooth_factor'] * 100))
+            if 'zoom_margin' in settings:
+                self.margin_spin.setValue(settings['zoom_margin'])
+            if 'enable_physical_ptz' in settings:
+                self.ptz_cb.setChecked(settings['enable_physical_ptz'])
+            if 'enable_onboard_tracker' in settings:
+                self.onboard_tracker_cb.setChecked(settings['enable_onboard_tracker'])
+            if 'draw_preview_roi' in settings:
+                self.preview_roi_cb.setChecked(settings['draw_preview_roi'])
+            if 'draw_output_roi' in settings:
+                self.output_roi_cb.setChecked(settings['draw_output_roi'])
+            if 'flip_video' in settings:
+                self.flip_cb.setChecked(settings['flip_video'])
+            if 'stream_encoder' in settings:
+                self.encoder_combo.setCurrentIndex(settings['stream_encoder'])
+            if 'stream_quality' in settings:
+                self.bitrate_combo.setCurrentIndex(settings['stream_quality'])
+                
+            # We also need to restore target/blur class IDs
+            target_ids = settings.get('target_class_ids', [])
+            blur_ids = settings.get('blur_class_ids', [])
+            
+            # Update the checkboxes
+            if hasattr(self, 'class_checkboxes'):
+                for cid, cb in self.class_checkboxes:
+                    cb.setChecked(cid in target_ids)
+            if hasattr(self, 'blur_checkboxes'):
+                for cid, cb in self.blur_checkboxes:
+                    cb.setChecked(cid in blur_ids)
+                    
+            self.update_target_classes()
+            global_logger.info(f"Loaded preset: {tag}")
 
     @Slot(str)
     def append_log(self, text): self.log_text.append(text)
+
+    def update_hardware_stats(self):
+        cpu_usage = psutil.cpu_percent()
+        ram = psutil.virtual_memory()
+        ram_usage = ram.percent
+        
+        # Calculate FPS based on frames processed in the last second
+        current_frames = 0
+        if self.worker and hasattr(self.worker, 'frame_count'):
+            current_frames = self.worker.frame_count
+            
+        fps = current_frames - self.last_frame_count
+        self.last_frame_count = current_frames
+        
+        self.hw_cpu_label.setText(f"CPU Usage: {cpu_usage:.1f}%")
+        self.hw_ram_label.setText(f"RAM Usage: {ram_usage:.1f}% ({ram.used / (1024**3):.1f} GB)")
+        if self.is_tracking:
+            self.hw_fps_label.setText(f"Output FPS: {fps}")
+        else:
+            self.hw_fps_label.setText("Output FPS: --")
+            
+        # Optional: Add color coding based on usage
+        self.hw_cpu_label.setStyleSheet("color: red;" if cpu_usage > 85 else "color: #E2E2E2;")
+        self.hw_ram_label.setStyleSheet("color: red;" if ram_usage > 85 else "color: #E2E2E2;")
+        
+        # Hardware Watchdog for OBSBOT Auto-Reconnect
+        if self.obsbot and not self.obsbot.connected and getattr(self, 'ptz_cb', None) and self.ptz_cb.isChecked():
+            if getattr(self, 'is_tracking', False) and not getattr(self, 'obsbot_thread', None) and hasattr(self, 'reconnect_obsbot_btn') and self.reconnect_obsbot_btn.isEnabled():
+                if time.time() - getattr(self, 'last_reconnect_attempt', 0.0) > 5.0:
+                    global_logger.warning("Hardware Watchdog: OBSBOT connection lost. Auto-reconnecting...")
+                    self.last_reconnect_attempt = time.time()
+                    self.reconnect_obsbot()
 
     def init_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
@@ -1010,7 +1452,7 @@ class MainWindow(QMainWindow):
         show_action = tray_menu.addAction("📂 Restore Workspace")
         show_action.triggered.connect(self.showNormal)
 
-        start_action = tray_menu.addAction("▶ Start Tracking")
+        start_action = tray_menu.addAction("▶ Toggle Tracking")
         start_action.triggered.connect(self.toggle_tracking)
 
         tray_menu.addSeparator()
@@ -1020,17 +1462,6 @@ class MainWindow(QMainWindow):
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.show()
 
-    def toggle_panel(self, panel_name, checked):
-        panel_map = {
-            "config": self.config_dock,
-            "raw": self.input_preview_dock,
-            "ai": self.output_preview_dock,
-            "stream": self.streaming_dock,
-            "ptz": self.ptz_dock
-        }
-        if panel_name in panel_map:
-            panel_map[panel_name].setVisible(checked)
-
     def update_clock(self):
         self.clock_label.setText(time.strftime("%H:%M:%S"))
 
@@ -1039,7 +1470,21 @@ class MainWindow(QMainWindow):
         menu.setStyleSheet("QMenu { background-color: rgba(26, 26, 30, 240); color: white; border: 1px solid #333; padding: 5px; border-radius: 6px; } QMenu::item { padding: 8px 24px; border-radius: 4px; } QMenu::item:selected { background-color: #00E676; color: black; font-weight: bold; }")
         about_action = menu.addAction("ℹ️ About ZenithCam")
         about_action.triggered.connect(
-            lambda: self.status_label.setText("ZenithCam v2.0 - Plasma Edition"))
+            lambda: self.status_label.setText("ZenithCam v2.0 - Niri Edition"))
+        menu.addSeparator()
+        
+        reset_action = menu.addAction("🪟 Reset UI Workspace")
+        reset_action.triggered.connect(self.reset_workspace)
+        
+        save_def_action = menu.addAction("💾 Save Layout as Default")
+        save_def_action.triggered.connect(self.save_default_layout)
+        
+        if self.is_tracking:
+            track_action = menu.addAction("⏹ Stop Tracking")
+        else:
+            track_action = menu.addAction("▶ Start Tracking")
+        track_action.triggered.connect(self.toggle_tracking)
+        
         menu.addSeparator()
         exit_action = menu.addAction("❌ Shut Down")
         exit_action.triggered.connect(self.close)
@@ -1048,10 +1493,6 @@ class MainWindow(QMainWindow):
         pos = self.app_menu_btn.mapToGlobal(self.app_menu_btn.rect().topLeft())
         pos.setY(pos.y() - menu.sizeHint().height() - 40)
         menu.exec(pos)
-
-    def toggle_debug(self, *args):
-        state = self.debug_cb.isChecked()
-        self.debug_dock.setVisible(state)
 
     def toggle_ptz(self, *args):
         state = self.ptz_cb.isChecked()
@@ -1127,13 +1568,15 @@ class MainWindow(QMainWindow):
             cb, cb_b = QCheckBox(f"{name} (ID: {cid})"), QCheckBox(
                 f"{name} (ID: {cid})")
             t_name = str(name).lower()
-            if "action_zoom" in t_name or "penis" in t_name:
+            
+            # Default tracking: face and explicit action classes
+            if "make_love" in t_name or "penis" in t_name or "action_zoom" in t_name or t_name == "face":
                 cb.setChecked(True)
-            if t_name in ["anus", "nipple", "penis", "vagina", "face"]:
+                
+            # Default blurring (if enabled)
+            if t_name in ["anus", "nipple", "penis", "vagina"]:
                 cb_b.setChecked(True)
-            if t_name == "face":
-                cb.setEnabled(False)
-                cb.setStyleSheet("color: #666;")
+
             cb.stateChanged.connect(self.update_target_classes)
             cb_b.stateChanged.connect(self.update_target_classes)
             self.class_layout.addWidget(cb)
@@ -1141,6 +1584,56 @@ class MainWindow(QMainWindow):
             self.blur_layout.addWidget(cb_b)
             self.blur_checkboxes.append((cid, cb_b))
         self.update_target_classes()
+
+    def reset_workspace(self):
+        """Restores the UI layout to the saved custom default or hardcoded state"""
+        self.settings.remove("main_w")
+        self.settings.remove("main_h")
+        for key in self.panels.keys():
+            self.settings.remove(f"{key}_w")
+            self.settings.remove(f"{key}_h")
+
+        if self.settings.value("default_main_w", type=int):
+            self.resize(self.settings.value("default_main_w", type=int), self.settings.value("default_main_h", type=int))
+            for key, window in self.panels.items():
+                dw = self.settings.value(f"default_{key}_w", type=int)
+                dh = self.settings.value(f"default_{key}_h", type=int)
+                if dw and dh:
+                    window.resize(dw, dh)
+                
+                vis_val = self.settings.value(f"default_{key}_visible")
+                if vis_val is not None:
+                    is_vis = str(vis_val).lower() == 'true'
+                    window.setVisible(is_vis)
+        else:
+            for k, w in self.panels.items():
+                w.hide()
+            self.panels["hw"].show()
+            self.panels["hw"].resize(600, 800)
+            self.resize(600, 800)
+            
+        global_logger.info("Workspace layout reset.")
+        self.status_label.setText("Workspace reset.")
+
+    def save_default_layout(self):
+        """Saves the current geometries and visibility as the new default."""
+        self.settings.setValue("default_main_w", self.width())
+        self.settings.setValue("default_main_h", self.height())
+        for key, window in self.panels.items():
+            self.settings.setValue(f"default_{key}_w", window.width())
+            self.settings.setValue(f"default_{key}_h", window.height())
+            self.settings.setValue(f"default_{key}_visible", window.isVisible())
+            
+        global_logger.info("Current layout saved as default.")
+        self.status_label.setText("Layout saved as default.")
+
+    def update_shader_style(self, index):
+        styles = ["gaussian", "pixelate", "cyber_glitch", "edge_glow"]
+        if 0 <= index < len(styles):
+            self.params['blur_type'] = styles[index]
+            # Push to live renderer if active
+            if self.worker and hasattr(self.worker, 'hw') and self.worker.hw.renderer:
+                self.worker.hw.renderer.set_config({"blur_type": self.params['blur_type']})
 
     def update_smoothing(self, *args):
         self.params['smooth_factor'] = self.smooth_slider.value() / 100.0
@@ -1158,18 +1651,37 @@ class MainWindow(QMainWindow):
             self.obsbot_ai_combo.setCurrentIndex(0)
 
     def toggle_tracking(self, *args):
-        if self.thread and self.thread.isRunning():
+        if getattr(self, 'is_shutting_down', False) or getattr(self, 'is_transitioning', False):
+            return
+
+        if self.is_tracking:
+            self.is_transitioning = True
+            self.is_tracking = False
             self.start_btn.setEnabled(False)
             self.start_btn.setText("Stopping...")
-            self.worker.stop()
-            self.thread.quit()
-            self.thread.wait()
-            self.start_btn.setEnabled(True)
-            self.worker = None
-            self.thread = None
+            
+            if self.worker:
+                self.worker.stop()
+            else:
+                self._on_worker_finished()
         else:
-            self.params['input_source'], self.params['output_device'] = self.input_spin.value(
-            ), self.output_edit.currentText()
+            if self.thread is not None:
+                return  # Wait for full cleanup before restarting
+                
+            self.is_transitioning = True
+            self.is_tracking = True
+            # Auto-detect the correct capture-capable video node for OBSBOT
+            # Only auto-detect if the current value is the default (1) or 0
+            current_idx = self.input_spin.value()
+            if current_idx <= 1:
+                capture_idx = find_obsbot_capture_index()
+                self.input_spin.setValue(capture_idx)
+                global_logger.info(f'Engine starting with auto-detected capture index: {capture_idx}')
+            else:
+                capture_idx = current_idx
+                global_logger.info(f'Engine starting with user-selected capture index: {capture_idx}')
+            
+            self.params['input_source'], self.params['output_device'] = capture_idx, self.output_edit.currentText()
             self.update_smoothing()
             self.update_margin()
             self.update_target_classes()
@@ -1178,16 +1690,82 @@ class MainWindow(QMainWindow):
             self.worker.moveToThread(self.thread)
             self.thread.started.connect(self.worker.process)
             self.worker.finished.connect(self.thread.quit)
+            # Safely schedule deletion ONLY after the respective threads fully quit
+            self.worker.finished.connect(self.worker.deleteLater)
+            self.thread.finished.connect(self.thread.deleteLater)
             self.worker.finished.connect(self._on_worker_finished)
+            self.thread.finished.connect(self._clear_thread_refs)
             self.worker.change_pixmap_signal.connect(self.update_image)
             self.worker.raw_pixmap_signal.connect(self.update_raw_image)
             self.worker.status_signal.connect(self.update_status)
+            
+            # Ninja Features Signals
+            self.worker.gesture_detected.connect(self.handle_gesture)
+            self.worker.nsfw_detected.connect(self.handle_nsfw_trigger)
+            self.worker.broll_trigger.connect(self.handle_broll_trigger)
+            self.worker.posture_detected.connect(self.handle_posture)
+            
             self.thread.start()
             self.start_btn.setText("Stop Tracking")
             self.start_btn.setStyleSheet(
                 "background-color: #FF5252; color: white; font-weight: bold; padding: 15px; border-radius: 8px;")
+            self.is_transitioning = False
 
+    def handle_gesture(self, gesture_type):
+        global_logger.info(f"Gesture Detected: {gesture_type}")
+        if gesture_type == 'peace':
+            # Toggle BRB Shield in frontend
+            if self.wb_worker:
+                self.wb_worker.broadcast({"type": "brb_trigger", "active": True}) # Or toggle it depending on state, but let's just trigger for now or send toggle signal. 
+                # To actually toggle we need to store state or just tell it to invert.
+        elif gesture_type == 'palm':
+            # Stop tracking
+            if self.obsbot and self.obsbot.connected:
+                self.obsbot.set_gimbal_speed(0, 0)
+                self.obsbot.set_ai_mode(0) # Disable AI
+
+    def handle_nsfw_trigger(self):
+        global_logger.info("NSFW Frame Detected! Triggering Auto-Privacy.")
+        if self.wb_worker:
+            self.wb_worker.broadcast({"type": "brb_trigger", "active": True})
+
+    def handle_broll_trigger(self):
+        global_logger.info("Subject lost. Triggering Cinematic B-Roll.")
+        if self.obsbot and self.obsbot.connected:
+            self.obsbot.set_ai_mode(0)
+            self.obsbot.set_gimbal_speed(0.0, 5.0) # Slow horizontal pan
+
+    def trigger_idle_wander(self):
+        if not hasattr(self, 'idle_wander_cb') or not self.idle_wander_cb.isChecked():
+            return
+            
+        global_logger.info("Idle Auto-Pilot triggered. Wandering to tease chat...")
+        if self.obsbot and self.obsbot.connected:
+            self.obsbot.set_ai_mode(0)
+            self.obsbot_ai_combo.setCurrentIndex(0)
+            self.obsbot.set_gimbal_speed(0.0, 3.0) # Slow pan horizontally
+            
+            # Smoothly reverse direction after 15 seconds to sweep the room
+            QTimer.singleShot(15000, lambda: self.obsbot.set_gimbal_speed(0.0, -3.0) if self.obsbot and self.obsbot.connected else None)
+            QTimer.singleShot(30000, lambda: self.obsbot.set_gimbal_speed(0.0, 0.0) if self.obsbot and self.obsbot.connected else None)
+
+    def handle_posture(self, posture_type):
+        if not hasattr(self, 'posture_cb') or not self.posture_cb.isChecked():
+            return
+            
+        global_logger.info(f"AI Posture Trigger: {posture_type}")
+        if self.obsbot and self.obsbot.connected:
+            if posture_type == "reclined":
+                self.recall_preset("P2")
+                self.status_label.setText("AI: Reclined (Recalled P2)")
+            else:
+                self.recall_preset("Home")
+                self.status_label.setText("AI: Upright (Recalled Home)")
+
+    @Slot()
     def _on_worker_finished(self):
+        self.is_tracking = False
+        self.is_transitioning = False
         self.start_btn.setEnabled(True)
         self.start_btn.setText("Start Tracking")
         self.start_btn.setStyleSheet(
@@ -1195,6 +1773,11 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Stopped.")
         self.input_preview_label.setText("Offline")
         self.output_preview_label.setText("Offline")
+        
+    @Slot()
+    def _clear_thread_refs(self):
+        self.worker = None
+        self.thread = None
 
     def save_preset(self, name):
         if self.obsbot and self.obsbot.connected:
@@ -1213,6 +1796,44 @@ class MainWindow(QMainWindow):
             if self.worker:
                 self.worker._last_zoom = z
 
+    @Slot(int, int)
+    def on_output_single_click(self, x, y):
+        # Stop AI Tracking by unchecking class boxes
+        self.last_active_classes = [cid for cid, cb in self.class_checkboxes if cb.isChecked()]
+        for cid, cb in self.class_checkboxes:
+            cb.setChecked(False)
+        self.update_target_classes()
+        if self.worker:
+            w = self.output_preview_label.width()
+            h = self.output_preview_label.height()
+            self.worker.handle_click(x, y, w, h, "single")
+            
+    @Slot(int, int)
+    def on_output_double_click(self, x, y):
+        # Resume last tracking settings... wait, I need to store them.
+        # If we just re-check "Person" (class 0) for now, or just resume
+        # Let's say we have a self.last_active_classes to restore
+        if hasattr(self, 'last_active_classes') and self.last_active_classes:
+            for cid, cb in self.class_checkboxes:
+                cb.setChecked(cid in self.last_active_classes)
+        else:
+            # default to person
+            if self.class_checkboxes:
+                self.class_checkboxes[0][1].setChecked(True)
+        self.update_target_classes()
+        if self.worker:
+            w = self.output_preview_label.width()
+            h = self.output_preview_label.height()
+            self.worker.handle_click(x, y, w, h, "zoom_in")
+            self.worker.handle_click(x, y, w, h, "resume")
+
+    @Slot(int, int)
+    def on_output_right_click(self, x, y):
+        if self.worker:
+            w = self.output_preview_label.width()
+            h = self.output_preview_label.height()
+            self.worker.handle_click(x, y, w, h, "zoom_out")
+
     @Slot(QImage)
     def update_image(self, qt_img):
         self.output_preview_label.setPixmap(QPixmap.fromImage(qt_img).scaled(self.output_preview_label.size(
@@ -1228,62 +1849,100 @@ class MainWindow(QMainWindow):
         self.status_label.setText(text)
 
     def start_manual_move(self, pan, tilt):
-        if self.obsbot and self.obsbot.connected:
-            self.obsbot.set_ai_mode(0)
-            self.obsbot_ai_combo.setCurrentIndex(0)
+        self.idle_timer.start() # Reset idle timer on manual override
+        try:
+            if self.obsbot and self.obsbot.connected:
+                self.obsbot.set_ai_mode(0)
+                self.obsbot_ai_combo.setCurrentIndex(0)
+        except Exception as e:
+            self.obsbot.connected = False
         self.move_data.update(
             {"pan": pan, "tilt": tilt, "zoom": 0, "start_time": time.time()})
         self.move_timer.start(50)
 
     def start_manual_zoom(self, direction):
-        if self.obsbot and self.obsbot.connected:
-            self.obsbot.set_ai_mode(0)
-            self.obsbot_ai_combo.setCurrentIndex(0)
+        self.idle_timer.start() # Reset idle timer on manual override
+        try:
+            if self.obsbot and self.obsbot.connected:
+                self.obsbot.set_ai_mode(0)
+                self.obsbot_ai_combo.setCurrentIndex(0)
+        except Exception as e:
+            self.obsbot.connected = False
         self.move_data.update(
             {"pan": 0, "tilt": 0, "zoom": direction, "start_time": time.time()})
         self.move_timer.start(50)
 
     def stop_manual_move(self):
         self.move_timer.stop()
-        if self.obsbot and self.obsbot.connected:
-            self.obsbot.set_gimbal_speed(0.0, 0.0)
+        try:
+            if self.obsbot and self.obsbot.connected:
+                self.obsbot.set_gimbal_speed(0.0, 0.0)
+        except Exception as e:
+            self.obsbot.connected = False
 
     def apply_manual_ptz(self):
         if not self.obsbot or not self.obsbot.connected:
             return
-        accel = float(
-            min(1.0, max(0.1, (time.time() - self.move_data["start_time"]) / 2.0)))
-        if self.move_data["pan"] or self.move_data["tilt"]:
-            self.obsbot.set_gimbal_speed(
-                float(-self.move_data["tilt"] * 30 * accel), float(-self.move_data["pan"] * 60 * accel))
-        if self.move_data["zoom"]:
-            z = float(self.worker._last_zoom if self.worker else 1.0) + \
-                float(self.move_data["zoom"] * (0.01 + 0.04 * accel))
-            nz = float(np.clip(z, 1.0, 2.0))
-            self.obsbot.set_zoom(nz)
-            if self.worker:
-                self.worker._last_zoom = nz
+        try:
+            accel = float(
+                min(1.0, max(0.1, (time.time() - self.move_data["start_time"]) / 2.0)))
+            if self.move_data["pan"] or self.move_data["tilt"]:
+                self.obsbot.set_gimbal_speed(
+                    float(-self.move_data["tilt"] * 30 * accel), float(-self.move_data["pan"] * 60 * accel))
+            if self.move_data["zoom"]:
+                z = float(self.worker._last_zoom if self.worker else 1.0) + \
+                    float(self.move_data["zoom"] * (0.01 + 0.04 * accel))
+                nz = float(np.clip(z, 1.0, 2.0))
+                self.obsbot.set_zoom(nz)
+                if self.worker:
+                    self.worker._last_zoom = nz
+        except Exception as e:
+            global_logger.error(f"Manual PTZ Error: {e}")
+            self.obsbot.connected = False
+            self.move_timer.stop()
 
     def manual_center(self, *args):
-        if self.obsbot and self.obsbot.connected:
-            self.obsbot.set_ai_mode(0)
-            self.obsbot_ai_combo.setCurrentIndex(0)
-            self.obsbot.set_gimbal_angle(0, 0)
-            self.obsbot.set_zoom(1)
-            if self.worker:
-                self.worker._last_zoom = 1
+        self.idle_timer.start() # Reset idle timer on manual override
+        try:
+            if self.obsbot and self.obsbot.connected:
+                self.obsbot.set_ai_mode(0)
+                self.obsbot_ai_combo.setCurrentIndex(0)
+                self.obsbot.set_gimbal_angle(0, 0)
+                self.obsbot.set_zoom(1)
+                if self.worker:
+                    self.worker._last_zoom = 1
+        except Exception as e:
+            self.obsbot.connected = False
 
     def reset_gimbal(self, *args):
-        if self.obsbot and self.obsbot.connected:
-            self.obsbot.set_ai_mode(0)
-            self.obsbot_ai_combo.setCurrentIndex(0)
-            self.obsbot.reset_gimbal()
-            self.obsbot.set_zoom(1)
-            if self.worker:
-                self.worker._last_zoom = 1
+        self.idle_timer.start() # Reset idle timer on manual override
+        try:
+            if self.obsbot and self.obsbot.connected:
+                self.obsbot.set_ai_mode(0)
+                self.obsbot_ai_combo.setCurrentIndex(0)
+                self.obsbot.reset_gimbal()
+                self.obsbot.set_zoom(1)
+                if self.worker:
+                    self.worker._last_zoom = 1
+        except Exception as e:
+            self.obsbot.connected = False
 
     _SUBMODE_OPTIONS = {0: [], 1: ["Default"], 2: [
         "Full Body", "Upper Body"], 3: ["Default"], 4: ["Default"], 5: ["Default"]}
+
+    def toggle_hold_ptz(self, state):
+        self.params['hold_ptz'] = bool(state)
+        if self.params['hold_ptz']:
+            global_logger.info("PTZ Hold Activated")
+            if self.obsbot and self.obsbot.connected:
+                self.obsbot.set_gimbal_speed(0, 0)
+        else:
+            global_logger.info("PTZ Hold Deactivated")
+
+    def update_manual_zoom(self, value):
+        self.params['manual_zoom'] = value / 10.0
+        if self.params['hold_ptz'] and self.obsbot and self.obsbot.connected:
+            self.obsbot.set_zoom(self.params['manual_zoom'])
 
     def change_obsbot_ai_mode(self, index):
         subs = self._SUBMODE_OPTIONS.get(index, [])
@@ -1311,16 +1970,89 @@ class MainWindow(QMainWindow):
         if self.obsbot and self.obsbot.connected:
             self.obsbot.set_privacy_mode(self.privacy_cb.isChecked())
 
+    def toggle_bluetooth_mode(self, state):
+        use_bt = bool(state)
+        self.scan_bt_btn.setEnabled(use_bt)
+        self.bt_device_combo.setVisible(use_bt)
+        
+        # Re-initialize SDK with Bluetooth support if changed
+        if use_bt != self.obsbot.use_bluetooth:
+            self.obsbot.disconnect()
+            self.obsbot = OBSBOTSDK(use_bluetooth=use_bt)
+            self.params['obsbot'] = self.obsbot
+            if use_bt:
+                self.obsbot.bt_manager.device_discovered.connect(self.on_bt_device_found)
+                self.obsbot.bt_manager.connection_status.connect(self.on_bt_connection_status)
+            self.status_label.setText(f"Switched to {'Bluetooth' if use_bt else 'USB'} mode.")
+
+    def scan_bluetooth(self):
+        if self.obsbot.use_bluetooth:
+            self.bt_device_combo.clear()
+            self.status_label.setText("Scanning for Bluetooth cameras...")
+            self.obsbot.bt_manager.start_scan()
+
+    @Slot(str, str)
+    def on_bt_device_found(self, name, address):
+        self.bt_device_combo.addItem(f"{name} ({address})", address)
+        self.status_label.setText(f"Found: {name}")
+
+    def connect_bluetooth_device(self, index):
+        if index < 0: return
+        address = self.bt_device_combo.itemData(index)
+        if address:
+            self.status_label.setText(f"Connecting to {address}...")
+            self.obsbot.connect(address)
+
+    @Slot(bool, str)
+    def on_bt_connection_status(self, connected, message):
+        if connected:
+            self.status_label.setText(f"BT Connected: {message}")
+            self.reconnect_obsbot_btn.setText("🔌 BT Connected")
+        else:
+            self.status_label.setText(f"BT Error: {message}")
+            self.reconnect_obsbot_btn.setText("🔌 Connect OBSBOT")
+
+    def async_init_obsbot(self):
+        self.status_label.setText("Connecting OBSBOT...")
+        if hasattr(self, 'reconnect_obsbot_btn'):
+            self.reconnect_obsbot_btn.setEnabled(False)
+            
+        self.obsbot_thread = ObsbotConnectThread(self.obsbot, reconnect=False)
+        self.obsbot_thread.finished.connect(self._on_obsbot_init_finished)
+        self.obsbot_thread.start()
+
+    def _on_obsbot_init_finished(self, success):
+        if success:
+            global_logger.info("Connected to OBSBOT SDK")
+            self.obsbot.set_ai_mode(0)
+            self.status_label.setText("Status: Idle (OBSBOT Ready)")
+        else:
+            global_logger.warning("OBSBOT SDK connection failed. Retry via UI.")
+            self.status_label.setText("Status: Idle (OBSBOT Offline)")
+        if hasattr(self, 'reconnect_obsbot_btn'):
+            self.reconnect_obsbot_btn.setEnabled(True)
+        self.obsbot_thread.deleteLater()
+        self.obsbot_thread = None
+
     def reconnect_obsbot(self, *args):
         if self.obsbot:
-            self.status_label.setText("Reconnecting...")
-            self.obsbot.disconnect()
-            if self.obsbot.connect():
-                self.obsbot.set_ai_mode(0)
-                self.obsbot_ai_combo.setCurrentIndex(0)
-                self.status_label.setText("Reconnected.")
-            else:
-                self.status_label.setText("Failed.")
+            self.status_label.setText("Reconnecting OBSBOT...")
+            self.reconnect_obsbot_btn.setEnabled(False)
+            
+            self.obsbot_thread = ObsbotConnectThread(self.obsbot, reconnect=True)
+            self.obsbot_thread.finished.connect(self._on_obsbot_reconnect_finished)
+            self.obsbot_thread.start()
+
+    def _on_obsbot_reconnect_finished(self, success):
+        if success:
+            self.obsbot.set_ai_mode(0)
+            self.obsbot_ai_combo.setCurrentIndex(0)
+            self.status_label.setText("OBSBOT Reconnected.")
+        else:
+            self.status_label.setText("OBSBOT Connection Failed.")
+        self.reconnect_obsbot_btn.setEnabled(True)
+        self.obsbot_thread.deleteLater()
+        self.obsbot_thread = None
 
     def load_profiles(self):
         try:
@@ -1332,6 +2064,145 @@ class MainWindow(QMainWindow):
         if not self.stream_profiles:
             self.stream_profiles = [
                 {"name": "Default", "site": "Stripchat", "url": "rtmp://localhost:1935/live", "key": "test"}]
+
+    @Slot(dict)
+    def handle_web_ptz_command(self, data):
+        """
+        Receives dictionary commands from the Tampermonkey WebBridge.
+        Translates them into actions on the physical OBSBOT camera.
+        """
+        # Reset Idle Timer on any incoming interaction/chat data
+        if hasattr(self, 'idle_timer'):
+            self.idle_timer.start()
+            
+        if not self.obsbot or not self.obsbot.connected:
+            global_logger.warning("Web PTZ Command ignored: OBSBOT not connected.")
+            return
+
+        command = data.get("command")
+        action = data.get("action")
+        
+        if command == "ptz":
+            try:
+                if self.obsbot_ai_combo.currentIndex() != 0:
+                    self.obsbot_ai_combo.setCurrentIndex(0)
+                    self.obsbot.set_ai_mode(0)
+    
+                speed = 30.0
+                if action == "up":
+                    self.obsbot.set_gimbal_speed(-speed, 0.0)
+                elif action == "down":
+                    self.obsbot.set_gimbal_speed(speed, 0.0)
+                elif action == "left":
+                    self.obsbot.set_gimbal_speed(0.0, speed)
+                elif action == "right":
+                    self.obsbot.set_gimbal_speed(0.0, -speed)
+                elif action == "stop":
+                    self.obsbot.set_gimbal_speed(0.0, 0.0)
+                elif action == "reset":
+                    self.obsbot.reset_gimbal()
+            except Exception as e:
+                global_logger.error(f"Web PTZ Command Error: {e}")
+                self.obsbot.connected = False
+                
+        elif command == "chat":
+            platform = data.get("platform", "Web")
+            username = data.get("username", "User")
+            message = data.get("message", "")
+            
+            if hasattr(self, 'chat_list'):
+                self.chat_list.addItem(f"[{platform.capitalize()}] {username}: {message}")
+                self.chat_list.scrollToBottom()
+                
+        elif command == "ptz_aim":
+            nx = float(data.get("x", 0.0))
+            ny = float(data.get("y", 0.0))
+            
+            global_logger.info(f"Web PTZ Click-to-Aim received: ({nx}, {ny})")
+            
+            try:
+                # Send burst speed mapping directly since relative pointing is tricky without precise angle feedback
+                self.obsbot.set_gimbal_speed(ny * 40.0, nx * 60.0)
+                QTimer.singleShot(250, lambda: self.obsbot.set_gimbal_speed(0, 0) if self.obsbot and self.obsbot.connected else None)
+            except Exception as e:
+                global_logger.error(f"Web PTZ Aim Error: {e}")
+                self.obsbot.connected = False
+            
+        elif command == "ptz_analog":
+            # FPS-Style Mouse Look
+            if hasattr(self, 'fps_mouse_cb') and self.fps_mouse_cb.isChecked():
+                pan_spd = float(data.get("pan_speed", 0.0))
+                tilt_spd = float(data.get("tilt_speed", 0.0))
+                try:
+                    # Send raw analog speeds directly to the SDK
+                    if self.obsbot_ai_combo.currentIndex() == 0: # Ensure AI is off while manually aiming
+                        self.obsbot.set_gimbal_speed(tilt_spd, pan_spd)
+                except Exception as e:
+                    global_logger.error(f"Web PTZ Analog Error: {e}")
+                    self.obsbot.connected = False
+            
+        elif command == "reaction":
+            if action == "zoom_action":
+                global_logger.info("Chat Tip Reaction: Dramatic Action Zoom!")
+                try:
+                    # Disable AI temporarily
+                    self.obsbot.set_ai_mode(0)
+                    
+                    # Get the center of the best targeted box (from ML pipeline if available)
+                    # Instead of just general zoom, attempt to steer the gimbal directly to the action!
+                    if self.worker and hasattr(self.worker, 'ml_pipeline') and self.worker.ml_pipeline.current_boxes:
+                        boxes = self.worker.ml_pipeline.current_boxes
+                        # Filter for only targeted boxes that aren't the face
+                        target_boxes = [b for b in boxes if b[4] in self.params.get('target_class_ids', []) and b[4] != 99]
+                        
+                        if target_boxes:
+                            # Sort by confidence
+                            target_boxes.sort(key=lambda x: x[5], reverse=True)
+                            best_box = target_boxes[0]
+                            bx, by, bw, bh = best_box[:4]
+                            
+                            # Normalize to center (-1.0 to 1.0)
+                            cx = (bx + bw/2) / self.params.get('output_width', 1280)
+                            cy = (by + bh/2) / self.params.get('output_height', 720)
+                            nx = (cx * 2) - 1.0
+                            ny = (cy * 2) - 1.0
+                            
+                            # Quick sprint to the object
+                            self.obsbot.set_gimbal_speed(ny * 60.0, nx * 80.0)
+                            QTimer.singleShot(200, lambda: self.obsbot.set_gimbal_speed(0, 0) if self.obsbot and self.obsbot.connected else None)
+    
+                    # Zoom in
+                    self.obsbot.set_zoom(1.8)
+                    
+                    # Set a timer to reset after 3 seconds
+                    QTimer.singleShot(3000, lambda: self.obsbot.set_zoom(1.0) if self.obsbot and self.obsbot.connected else None)
+                    QTimer.singleShot(3100, lambda: self.obsbot.set_ai_mode(2) if self.obsbot and self.obsbot.connected else None) # Human Tracking
+                except Exception as e:
+                    global_logger.error(f"Reaction Error: {e}")
+                    self.obsbot.connected = False
+                
+            elif action == "hype_train":
+                if hasattr(self, 'hype_train_cb') and self.hype_train_cb.isChecked():
+                    if self.worker and self.worker.ptz:
+                        self.worker.ptz.trigger_shake(duration=5.0, intensity=50.0)
+                        
+        elif command == "system":
+            if action == "panic":
+                global_logger.warning("🚨 GLOBAL PANIC BUTTON TRIGGERED 🚨")
+                if hasattr(self, 'wb_worker') and self.wb_worker:
+                    self.wb_worker.broadcast({"type": "brb_trigger", "active": True})
+
+    def _broadcast_telemetry(self):
+        if not self.obsbot or not self.obsbot.connected or not self.wb_worker:
+            return
+        try:
+            p, y, r = self.obsbot.get_gimbal_attitude()
+            if p is not None and y is not None:
+                # Note: OBSBOT SDK might return angles or raw values depending on the wrapper, assuming raw v4l2 limits for map in frontend
+                self.wb_worker.broadcast({"type": "telemetry", "pan": y, "tilt": p})
+        except Exception as e:
+            global_logger.debug(f"Telemetry Error: {e}")
+            self.obsbot.connected = False
 
     def save_profiles_to_disk(self):
         try:
@@ -1433,9 +2304,26 @@ class MainWindow(QMainWindow):
                 if not url.endswith('/'):
                     url += '/'
                 full_url = url + key
-                cmd = [
-                    "/usr/bin/ffmpeg", "-y", "-thread_queue_size", "1024", "-f", "rawvideo", "-vcodec", "rawvideo", "-s", f"{width}x{height}", "-pix_fmt", "rgb24", "-framerate", "30", "-i", "-", "-thread_queue_size", "1024", "-f", "pulse", "-i", "default", "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-profile:v", "main", "-bf", "0"
-                ]
+                
+                encoder_idx = self.encoder_combo.currentIndex()
+                cmd = ["/usr/bin/ffmpeg", "-y", "-thread_queue_size", "1024"]
+                
+                if encoder_idx == 2: # VA-API (Intel/AMD)
+                    cmd.extend(["-vaapi_device", "/dev/dri/renderD128"])
+                    
+                cmd.extend([
+                    "-f", "rawvideo", "-vcodec", "rawvideo", "-s", f"{width}x{height}", 
+                    "-pix_fmt", "rgb24", "-framerate", "60", "-use_wallclock_as_timestamps", "1", "-i", "-", 
+                    "-thread_queue_size", "1024", "-f", "pulse", "-i", "default"
+                ])
+                
+                if encoder_idx == 1: # NVENC (NVIDIA)
+                    cmd.extend(["-c:v", "h264_nvenc", "-preset", "p2", "-tune", "ull", "-profile:v", "main", "-bf", "0", "-zerolatency", "1", "-pix_fmt", "yuv420p"])
+                elif encoder_idx == 2: # VA-API (Intel/AMD)
+                    cmd.extend(["-vf", "format=nv12,hwupload", "-c:v", "h264_vaapi", "-profile:v", "main", "-bf", "0"])
+                else: # CPU (x264)
+                    cmd.extend(["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-profile:v", "main", "-bf", "0", "-pix_fmt", "yuv420p"])
+
                 br_idx = self.bitrate_combo.currentIndex()
                 if br_idx == 0:
                     cmd.extend(["-b:v", "3000k", "-maxrate", "3000k",
@@ -1446,10 +2334,9 @@ class MainWindow(QMainWindow):
                 else:
                     cmd.extend(["-b:v", "6000k", "-maxrate", "6000k",
                                "-minrate", "6000k", "-bufsize", "6000k"])
-                cmd.extend(["-pix_fmt", "yuv420p", "-g", "60", "-keyint_min", "60", "-c:a",
-                           "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2", "-f", "flv", full_url])
-                global_logger.info(
-                    f"Starting stream to {p['name']}: {' '.join(cmd)}")
+                cmd.extend(["-g", "60", "-keyint_min", "60", "-af", "aresample=async=1", "-c:a",
+                               "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2", "-f", "flv", full_url])
+                global_logger.info(f"Starting stream to {p['name']}: {' '.join(cmd)}")
                 sp = subprocess.Popen(
                     cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
 
@@ -1474,6 +2361,7 @@ class MainWindow(QMainWindow):
                     f"Streaming to {len(self.params['active_streams'])} destination(s)")
 
     def closeEvent(self, event):
+        self.is_shutting_down = True
         if self.params.get('active_streams'):
             for sp in self.params['active_streams']:
                 try:
@@ -1487,19 +2375,74 @@ class MainWindow(QMainWindow):
                 self.stream_process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 self.stream_process.kill()
-        if self.thread and self.thread.isRunning():
-            self.worker.stop()
-            self.thread.quit()
-            self.thread.wait(3000)
-            if self.thread.isRunning():
-                self.thread.terminate()
-                self.thread.wait()
+                
+        # Save Window Layout State
+        self.settings.setValue("main_w", self.width())
+        self.settings.setValue("main_h", self.height())
+        for key, window in self.panels.items():
+            self.settings.setValue(f"{key}_w", window.width())
+            self.settings.setValue(f"{key}_h", window.height())
+            self.settings.setValue(f"{key}_visible", window.isVisible())
+            window.close() # Ensure all floating windows die when main app closes
+
+        # Teardown WebBridge
+        if hasattr(self, 'wb_worker') and self.wb_worker:
+            try:
+                if hasattr(self.wb_worker, 'stop'):
+                    self.wb_worker.stop()
+                if hasattr(self, 'wb_thread') and self.wb_thread.isRunning():
+                    self.wb_thread.quit()
+                    self.wb_thread.wait(1000)
+            except Exception as e:
+                global_logger.debug(f"Error closing Web Bridge: {e}")
+
+        # Keep local references to prevent race conditions during teardown
+        worker_ref = self.worker
+        thread_ref = self.thread
+        
+        self.worker = None
+        self.thread = None
+        
+        if worker_ref:
+            worker_ref.stop()
+            
+        if thread_ref and thread_ref.isRunning():
+            thread_ref.quit()
+            if not thread_ref.wait(3000):
+                global_logger.warning("Worker thread timed out, forcing termination.")
+                thread_ref.terminate()
+                thread_ref.wait()
+                # Manually clean up hardware if the finally block didn't execute
+                if worker_ref and hasattr(worker_ref, 'hw'):
+                    worker_ref.hw.cleanup_all()
+                    
+        # Disconnect OBSBOT hardware safely
+        if self.obsbot and self.obsbot.connected:
+            try:
+                self.obsbot.set_gimbal_speed(0.0, 0.0)
+                self.obsbot.disconnect()
+                global_logger.info("OBSBOT Hardware disconnected.")
+            except Exception as e:
+                global_logger.debug(f"OBSBOT disconnect err: {e}")
+            
+        global_logger.info("ZenithCam Studio shutdown complete.")
         event.accept()
 
 
 if __name__ == "__main__":
+    os.environ["QT_QPA_PLATFORM"] = "wayland;xcb"
+    os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
+    os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
     app = QApplication(sys.argv)
     app.setStyleSheet(STYLESHEET)
-    window = MainWindow()
+    from new_ui import ModernMainWindow
+    window = ModernMainWindow()
     window.show()
+    
+    # Handle Terminal Ctrl+C to trigger closeEvent gracefully
+    signal.signal(signal.SIGINT, lambda sig, frame: window.close())
+    sigint_timer = QTimer()
+    sigint_timer.start(500) # Yield back to Python interpreter every 500ms to catch the signal
+    sigint_timer.timeout.connect(lambda: None)
+    
     sys.exit(app.exec())

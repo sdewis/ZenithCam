@@ -1,0 +1,26 @@
+[
+    {
+        "name": "ll",
+        "command": "ls -alF"
+    },
+    {
+        "name": "la",
+        "command": "ls -A"
+    },
+    {
+        "name": "l",
+        "command": "ls -CF"
+    },
+    {
+        "name": "alert",
+        "command": "notify-send --urgency=low -i \"$([ $? = 0 ] && echo terminal || echo error)\" \"$(history|tail -n1|sed -e "
+    },
+    {
+        "name": "grephist",
+        "command": "history | grep -i"
+    },
+    {
+        "name": "gemyolo",
+        "command": "gemini -y --include-directories ~/ -i"
+    }
+]

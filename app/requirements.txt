@@ -13,3 +13,4 @@ glfw
 moderngl-window
 PyQt6
 mediapipe
+bleak

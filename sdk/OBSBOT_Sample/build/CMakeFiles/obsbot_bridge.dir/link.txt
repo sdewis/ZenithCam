@@ -1,1 +1,0 @@
-/usr/bin/c++ -fPIC  -Wall -g -pthread -shared -Wl,-soname,libobsbot_bridge.so -o libobsbot_bridge.so CMakeFiles/obsbot_bridge.dir/obsbot_bridge.cpp.o   -L/home/sean/CodeFolder/ZenithCam_SDK_Integrated/sdk/OBSBOT_Sample/../linux/x86_64-release  -Wl,-rpath,/home/sean/CodeFolder/ZenithCam_SDK_Integrated/sdk/OBSBOT_Sample/../linux/x86_64-release: -ldev

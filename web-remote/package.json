@@ -1,0 +1,23 @@
+{
+  "name": "web-remote",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server.js",
+    "tunnel": "lt --port 3000 --subdomain zenith-cam-remote",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "socket.io": "^4.8.3",
+    "zeromq": "^6.5.0"
+  },
+  "devDependencies": {
+    "localtunnel": "^2.0.2"
+  }
+}

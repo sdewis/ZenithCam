@@ -40,7 +40,7 @@ class OBSBOTController:
             device: Video device path (default: from env or /dev/video0)
             output_dir: Capture output directory (default: from env or /tmp/obsbot_captures)
         """
-        self.device = device or os.environ.get('OBSBOT_DEVICE', '/dev/video5')
+        self.device = device or os.environ.get('OBSBOT_DEVICE', '/dev/video1')
         self.output_dir = Path(output_dir or os.environ.get('OBSBOT_OUTPUT_DIR', '/tmp/obsbot_captures'))
         self.cap = None
         self.current_pan = 0

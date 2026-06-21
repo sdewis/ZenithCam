@@ -6,6 +6,6 @@
             "packageManager": "ms-python.python:pip"
         }
     ],
-    "cmake.sourceDirectory": "/home/sean/CodeFolder/ZenithCam_SDK_Integrated/sdk/OBSBOT_Sample",
+    "cmake.sourceDirectory": "/home/sean/CodeFolder/ZenithCam/sdk/OBSBOT_Sample",
     "terminal.integrated.enableImages": true
 }

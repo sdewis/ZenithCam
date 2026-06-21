@@ -1,14 +1,15 @@
-import cv2
-import numpy as np
-import onnxruntime as ort
+import cv2  # type: ignore
+import numpy as np  # type: ignore
+import onnxruntime as ort  # type: ignore
 import os
 import time
 import logging
 import threading
 import queue
-import mediapipe as mp
-from mediapipe.tasks.python import BaseOptions
-from mediapipe.tasks.python import vision
+from typing import Optional, List, Any
+import mediapipe as mp  # type: ignore
+from mediapipe.tasks.python import BaseOptions  # type: ignore
+from mediapipe.tasks.python import vision  # type: ignore
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -50,12 +51,17 @@ class MLPipeline(threading.Thread):
         self.result_queue = queue.Queue(maxsize=1)
         self.inference_busy = False
         
-        self.current_boxes = [] # [(x, y, w, h, class_id, conf)]
-        self.prev_gray = None
+        self.current_boxes: List[Any] = [] # [(x, y, w, h, class_id, conf)]
+        self.prev_gray: Any = None
         self.smooth_factor = 0.1 # Default
+        self._last_face_box: Optional[List[int]] = None
+        self._face_timeout = 0
         
         # CLAHE for Face Detection
         self.clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+        
+        # High-Performance DIS Optical Flow (Dense Inverse Search)
+        self.dis_flow = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_ULTRAFAST)
         
         # Initialize MediaPipe Face Landmarker
         mp_model_path = os.path.join(os.path.dirname(__file__), "models", "face_landmarker.task")
@@ -158,13 +164,14 @@ class MLPipeline(threading.Thread):
                         
                         current_face = [fx, fy, fw, fh]
                         
-                        if not hasattr(self, '_last_face_box') or self._last_face_box is None:
+                        last_box = getattr(self, '_last_face_box', None)
+                        if last_box is None:
                             self._last_face_box = current_face
                         else:
                             # EMA Smoothing to eliminate flickering
                             alpha = self.smooth_factor
                             self._last_face_box = [
-                                int(alpha * current_face[i] + (1 - alpha) * self._last_face_box[i])
+                                int(alpha * current_face[i] + (1 - alpha) * last_box[i])
                                 for i in range(4)
                             ]
                         
@@ -172,15 +179,17 @@ class MLPipeline(threading.Thread):
                         face_detected_this_frame = True
                     
                     # Persist the face box for a few frames if detection drops
-                    if not face_detected_this_frame and hasattr(self, '_last_face_box') and self._last_face_box is not None:
+                    last_box = getattr(self, '_last_face_box', None)
+                    if not face_detected_this_frame and last_box is not None:
                         if not hasattr(self, '_face_timeout'): self._face_timeout = 0
                         self._face_timeout += 1
                         # Keep the face blurred for up to 10 inference frames if it drops out
                         if self._face_timeout > 10:
                             self._last_face_box = None
                     
-                    if hasattr(self, '_last_face_box') and self._last_face_box is not None:
-                         lfx, lfy, lfw, lfh = self._last_face_box
+                    last_box_render = getattr(self, '_last_face_box', None)
+                    if last_box_render is not None:
+                         lfx, lfy, lfw, lfh = last_box_render
                          boxes.append([lfx, lfy, lfw, lfh, 99, 1.0])
                 
                 # Clear old results and put new
@@ -220,7 +229,8 @@ class MLPipeline(threading.Thread):
                 small_prev = cv2.resize(self.prev_gray, (160, 90), interpolation=cv2.INTER_NEAREST)
                 small_curr = cv2.resize(current_gray, (160, 90), interpolation=cv2.INTER_NEAREST)
                 
-                flow = cv2.calcOpticalFlowFarneback(small_prev, small_curr, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+                # Ultrafast tracking calculation via DIS
+                flow = self.dis_flow.calc(small_prev, small_curr, None)
                 
                 sx = frame.shape[1] / 160.0
                 sy = frame.shape[0] / 90.0
@@ -267,5 +277,5 @@ class MLPipeline(threading.Thread):
 
     def stop(self):
         self.running = False
-        if self._mp_landmarker:
-            self._mp_landmarker.close()
+        # Do not call _mp_landmarker.close() here as it can deadlock if the worker is still processing a frame.
+        # It will be safely cleaned up by the garbage collector when the MLPipeline object is destroyed.

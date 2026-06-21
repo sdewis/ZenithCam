@@ -3,8 +3,8 @@
 # Reset Virtual Camera Module
 echo "🔄 Resetting v4l2loopback module..."
 sudo rmmod v4l2loopback 2>/dev/null
-sudo modprobe v4l2loopback devices=1 video_nr=20 card_label="ZenithCam" exclusive_caps=1
-
+# sudo modprobe v4l2loopback devices=1 video_nr=20 card_label="ZenithCam" exclusive_caps=1
+sudo modprobe v4l2loopback devices=5 video_nr=0,10,20,30,40 card_label="Iriun Webcam,OBS Virtual Camera,ZenithCam,Virtcam30,Virtcam40" exclusive_caps=1
 # ZenithCam Integrated Starter Script
 # Automates environment setup and runs the integrated OBSBOT/YOLO application.
 

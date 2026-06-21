@@ -1,16 +1,17 @@
 import time
 import sys
+import os
 import logging
 import cv2
 
 logging.basicConfig(level=logging.DEBUG)
 
-sys.path.append("/home/sean/CodeFolder/ZenithCam_SDK_Integrated/app")
+sys.path.append(os.path.join(os.path.dirname(__file__), "app"))
 from obsbot_wrapper import OBSBOTSDK
 
 def test_opencv_conflict():
     print("Opening cv2 capture...")
-    cap = cv2.VideoCapture(5)
+    cap = cv2.VideoCapture(1)
     
     time.sleep(1)
     

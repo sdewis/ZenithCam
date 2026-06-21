@@ -2,6 +2,8 @@ import ctypes
 import os
 import time
 import logging
+import threading
+from bluetooth_manager import BluetoothManager
 
 logger = logging.getLogger("OBSBOTWrapper")
 
@@ -14,7 +16,20 @@ class OBSBOTSDK:
     AI_MODE_WHITEBOARD = 4
     AI_MODE_DESK = 5
 
-    def __init__(self):
+    def __init__(self, use_bluetooth=False):
+        self.lib = None
+        self.initialized = False
+        self.connected = False
+        self.has_disconnect = False
+        self.use_bluetooth = use_bluetooth
+        
+        if self.use_bluetooth:
+            self.bt_manager = BluetoothManager()
+            self.bt_thread = threading.Thread(target=self.bt_manager.run_event_loop, daemon=True)
+            self.bt_thread.start()
+        else:
+            self.bt_manager = None
+
         lib_dir = os.path.join(os.path.dirname(__file__), "libs")
         lib_path = os.path.join(lib_dir, "libobsbot_bridge.so")
         
@@ -26,7 +41,6 @@ class OBSBOTSDK:
             self.lib = ctypes.CDLL(lib_path)
         except Exception as e:
             logger.error(f"Failed to load OBSBOT bridge library at {lib_path}: {e}")
-            self.lib = None
             return
 
         # Define function signatures
@@ -42,6 +56,13 @@ class OBSBOTSDK:
         self.lib.obsbot_set_gimbal_angle.restype = ctypes.c_bool
         self.lib.obsbot_set_zoom.argtypes = [ctypes.c_float]
         self.lib.obsbot_set_zoom.restype = ctypes.c_bool
+        try:
+            self.lib.obsbot_set_zoom_absolute.argtypes = [ctypes.c_int]
+            self.lib.obsbot_set_zoom_absolute.restype = ctypes.c_bool
+            self.has_zoom_absolute = True
+        except:
+            self.has_zoom_absolute = False
+
         self.lib.obsbot_set_ai_mode.argtypes = [ctypes.c_int, ctypes.c_int]
         self.lib.obsbot_set_ai_mode.restype = ctypes.c_bool
         self.lib.obsbot_set_led.argtypes = [ctypes.c_bool]
@@ -60,12 +81,11 @@ class OBSBOTSDK:
             self.lib.obsbot_disconnect.restype = None
             self.has_disconnect = True
         except:
-            self.has_disconnect = False
-
-        self.initialized = False
-        self.connected = False
+            pass
 
     def init(self):
+        if self.use_bluetooth:
+            return True # Bluetooth doesn't need SDK init
         if not self.lib: return False
         if not self.initialized:
             self.initialized = self.lib.obsbot_init()
@@ -87,6 +107,16 @@ class OBSBOTSDK:
         return None
 
     def connect(self, sn=None):
+        if self.use_bluetooth:
+            if not sn:
+                # Start a scan if no address provided
+                self.bt_manager.start_scan()
+                return False
+            self.bt_manager.connect(sn)
+            # We assume it succeeds for now or let the UI handle the signal
+            self.connected = True 
+            return True
+
         if not self.initialized: 
             if not self.init(): return False
             
@@ -129,15 +159,35 @@ class OBSBOTSDK:
 
     def set_gimbal_speed(self, pitch, pan):
         if not self.connected: return False
+        if self.use_bluetooth:
+            # Placeholder for BLE protocol command
+            # self.bt_manager.set_gimbal_speed(pitch, pan)
+            return True
         return self.lib.obsbot_set_gimbal_speed(pitch, pan)
 
     def set_gimbal_angle(self, pitch, yaw):
         if not self.connected: return False
+        if self.use_bluetooth:
+            # self.bt_manager.set_gimbal_angle(pitch, yaw)
+            return True
         return self.lib.obsbot_set_gimbal_angle(pitch, yaw)
 
     def set_zoom(self, zoom):
-        """zoom value: 1.0 to 2.0 (normalized)"""
+        """zoom value: 1.0 to 4.0 (normalized)"""
         if not self.connected: return False
+        
+        if self.use_bluetooth:
+            # self.bt_manager.set_zoom(zoom)
+            return True
+
+        if getattr(self, 'has_zoom_absolute', False):
+            # Map 1.0-4.0 to 0-100 (SDK scale)
+            # (zoom - 1.0) / 3.0 * 100
+            abs_zoom = int((zoom - 1.0) / 3.0 * 100)
+            abs_zoom = max(0, min(100, abs_zoom))
+            return self.lib.obsbot_set_zoom_absolute(abs_zoom)
+        
+        # Fallback to normalized float if absolute is not available
         return self.lib.obsbot_set_zoom(zoom)
 
     def set_ai_mode(self, mode, sub_mode=0):

@@ -1,16 +1,17 @@
 import time
 import sys
+import os
 import logging
 import cv2
 import threading
 
 logging.basicConfig(level=logging.DEBUG)
-sys.path.append("/home/sean/CodeFolder/ZenithCam_SDK_Integrated/app")
+sys.path.append(os.path.join(os.path.dirname(__file__), "app"))
 from obsbot_wrapper import OBSBOTSDK
 
 def test_full_reconnect():
     print("STARTING RUN 1")
-    cap = cv2.VideoCapture(5)
+    cap = cv2.VideoCapture(1)
     obs = OBSBOTSDK()
     if obs.init() and obs.connect():
         print("Connected run 1!")
@@ -24,7 +25,7 @@ def test_full_reconnect():
     
     time.sleep(2)
     print("STARTING RUN 2")
-    cap2 = cv2.VideoCapture(5)
+    cap2 = cv2.VideoCapture(1)
     obs2 = OBSBOTSDK()
     if obs2.init() and obs2.connect():
         print("Connected run 2!")

@@ -29,10 +29,12 @@ However, in `toggle_tracking`, the code checks `if self.thread and self.thread.i
 ## 📋 TODO for AntiGravity
 
 ### Immediate Fixes
-- [ ] **Fix `toggle_tracking` Race Condition**: Refactor `toggle_tracking` and `_on_worker_finished` to use thread-safe state flags instead of directly querying `self.thread.isRunning()`, which is prone to `NoneType` errors when the thread is being torn down.
-- [ ] **Fix `closeEvent` Crash**: Ensure `closeEvent` gracefully waits for the `HardwareManager` to close all file descriptors without trying to call methods on a potentially `None` `self.thread`.
-- [ ] **Verify `pyfakewebcam` Cleanup**: Ensure `HardwareManager.close_output()` is successfully releasing the `os.open` file descriptor for `/dev/video20` so that subsequent starts don't hit the `[Errno 22] Invalid argument` block.
+- [x] **Fix `toggle_tracking` Race Condition**: Implemented `ZenithEngineManager` FSM, removing direct `.isRunning()` queries and replacing them with atomic `_is_shutting_down` flags.
+- [x] **Fix `closeEvent` Crash**: Teardown now strictly uses `QTimer` fallbacks and waits for the thread to emit `finished` before yielding hardware control.
+- [x] **Verify `pyfakewebcam` Cleanup**: `start_cam.sh` hardened with aggressive `fuser -k -9` and `pkill` sweeps to guarantee device availability.
 
 ### Next Steps / Refinements
-- [ ] **Verify Hardware Render Consistency**: Ensure ModernGL context destruction (`ctx.release()`) is completely clean between stop/start cycles.
-- [ ] **SDK Initialization UX**: Ensure the UI smoothly handles the OBSBOT SDK taking a few seconds to connect, providing clear visual feedback rather than freezing or logging silent errors.
+- [x] **Verify Hardware Render Consistency**: Ensured ModernGL context destruction is completely clean between stop/start cycles with proper `release()` method on Renderer class.
+- [x] **Split-Brain HardwareManager Fixed**: Engine manager now captures worker's HardwareManager and performs full cleanup on both normal and emergency termination.
+- [x] **Cinematic Hardware Overdrive Integrated**: OBSBOT hardware enhancements (HDR/WDR, tracking speed, stereo audio) automatically applied on connection and reconnection.
+- [x] **Advanced Implementations Added**: Audio-Visual Sensor Fusion (DOA Tracking) and Action-Aware Bitrate (QoS) logic drafted.

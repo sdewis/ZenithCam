@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>ZenithCam HUD</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --void: #010204;
+            --surface: rgba(8, 14, 24, 0.85);
+            --border: rgba(0, 240, 255, 0.18);
+            --border-hot: #00F0FF;
+            --accent: #00F0FF;
+            --danger: #FF0055;
+            --text: #C8DDE8;
+            --muted: #3D5A68;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+        html, body {
+            height: 100%;
+            background: var(--void);
+            color: var(--text);
+            font-family: 'Rajdhani', sans-serif;
+            overflow-x: hidden;
+        }
+
+        body {
+            background-image:
+                radial-gradient(ellipse at 10% 40%, rgba(0,240,255,0.06) 0%, transparent 50%),
+                radial-gradient(ellipse at 90% 70%, rgba(255,0,85,0.06) 0%, transparent 50%);
+        }
+
+        /* Scanline overlay */
+        body::after {
+            content: "";
+            position: fixed; inset: 0;
+            background: repeating-linear-gradient(
+                to bottom,
+                transparent 0px,
+                transparent 3px,
+                rgba(0,0,0,0.15) 3px,
+                rgba(0,0,0,0.15) 4px
+            );
+            pointer-events: none;
+            z-index: 9999;
+            opacity: 0.5;
+        }
+
+        /* HEADER */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px 20px;
+            border-bottom: 1px solid var(--border);
+            background: rgba(1,2,4,0.95);
+            position: sticky; top: 0; z-index: 100;
+        }
+
+        .brand { font-size: 1.3rem; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase; }
+        .brand em { color: var(--accent); font-style: normal; }
+
+        .conn-pill {
+            display: flex; align-items: center; gap: 6px;
+            font-family: 'JetBrains Mono', monospace; font-size: 0.7rem;
+            color: var(--muted); border: 1px solid var(--border); padding: 4px 10px;
+        }
+
+        .conn-dot {
+            width: 7px; height: 7px; border-radius: 50%;
+            background: var(--danger); box-shadow: 0 0 8px var(--danger);
+            transition: all 0.4s;
+        }
+        .conn-dot.on { background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+        .conn-dot.active { background: #00FF00; box-shadow: 0 0 15px #00FF00; animation: pulse 1.5s infinite; }
+
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.4); opacity: 0.7; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+
+        /* PANEL */
+        .panel {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--accent);
+            padding: 18px; margin: 14px 16px 0;
+            animation: fade-in 0.5s ease both;
+        }
+        .panel + .panel { margin-top: 12px; }
+        .panel:last-child { margin-bottom: 14px; }
+
+        @keyframes fade-in {
+            from { opacity: 0; transform: translateY(12px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        .panel-title {
+            font-size: 0.65rem; letter-spacing: 0.12em; text-transform: uppercase;
+            color: var(--accent); font-family: 'JetBrains Mono', monospace;
+            margin-bottom: 14px; border-bottom: 1px solid var(--border); padding-bottom: 8px;
+        }
+
+        .form-row { display: flex; flex-direction: column; gap: 5px; margin-bottom: 14px; }
+
+        label {
+            font-size: 0.7rem; font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted);
+        }
+
+        select, input[type="text"] {
+            background: rgba(0,0,0,0.5); border: 1px solid var(--border);
+            color: var(--text); padding: 11px 14px; font-family: 'Rajdhani', sans-serif;
+            font-size: 1rem; font-weight: 600; width: 100%; outline: none;
+            -webkit-appearance: none; appearance: none; transition: border-color 0.3s;
+        }
+        select:focus, input[type="text"]:focus { border-color: var(--accent); }
+
+        /* BUTTONS */
+        .track-btn {
+            width: 100%; padding: 18px; background: transparent;
+            border: 1px solid var(--danger); color: var(--danger);
+            font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 1.15rem;
+            letter-spacing: 0.25em; text-transform: uppercase; cursor: pointer;
+            transition: all 0.35s cubic-bezier(.16,1,.3,1); position: relative;
+            clip-path: polygon(8px 0%, 100% 0%, calc(100% - 8px) 100%, 0% 100%);
+        }
+        .track-btn.active {
+            border-color: var(--accent); color: var(--void);
+            background: var(--accent); box-shadow: 0 0 24px rgba(0,240,255,0.35);
+        }
+        .track-btn.power { border-color: #00E676; color: #00E676; }
+        .track-btn.power:active { background: #00E676; color: var(--void); }
+
+        .track-btn.broadcast { border-color: #2979FF; color: #2979FF; }
+        .track-btn.broadcast.active { border-color: #FF5252; color: #FFFFFF; background: #FF5252; }
+
+        .roi-btn {
+            flex: 1; padding: 10px; background: rgba(0,0,0,0.5); border: 1px solid var(--border);
+            color: var(--text); font-family: 'Rajdhani', sans-serif; font-size: 0.8rem;
+            text-transform: uppercase; letter-spacing: 0.1em; cursor: pointer;
+        }
+        .roi-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(0,240,255,0.1); }
+
+        /* TELEMETRY GRID */
+        .telem-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .telem-cell { background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.05); padding: 12px 14px; }
+        .telem-label { font-size: 0.6rem; font-family: 'JetBrains Mono', monospace; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 5px; }
+        .telem-val { font-family: 'JetBrains Mono', monospace; font-size: 1.3rem; font-weight: 700; color: var(--accent); transition: color 0.3s; }
+        .telem-val.warn { color: #FFCD00; }
+        .telem-val.danger { color: var(--danger); }
+
+        /* PTZ D-PAD */
+        .dpad-wrap { display: flex; flex-direction: column; align-items: center; gap: 0; }
+        .dpad-row { display: flex; gap: 0; }
+        .ptz-btn {
+            width: 72px; height: 72px; background: rgba(0,0,0,0.5); border: 1px solid var(--border);
+            color: var(--accent); font-size: 1.4rem; display: flex; align-items: center; justify-content: center;
+            cursor: pointer; user-select: none; transition: background 0.2s, box-shadow 0.2s; touch-action: none;
+        }
+        .ptz-btn.center { background: rgba(0,240,255,0.05); border-color: rgba(0,240,255,0.4); font-size: 1rem; font-family: 'JetBrains Mono', monospace; color: var(--muted); }
+        .ptz-btn:active, .ptz-btn.pressing { background: rgba(0,240,255,0.15); box-shadow: 0 0 16px rgba(0,240,255,0.2); }
+
+        .zoom-row { display: flex; gap: 10px; margin-top: 12px; width: 100%; }
+        .zoom-btn {
+            flex: 1; padding: 14px; background: transparent; border: 1px solid var(--border);
+            color: var(--text); font-family: 'Rajdhani', sans-serif; font-weight: 700;
+            font-size: 1.1rem; cursor: pointer; letter-spacing: 0.1em; transition: all 0.2s;
+        }
+        .zoom-btn:active { background: rgba(0,240,255,0.1); border-color: var(--accent); }
+
+        /* BRB & PRIVACY */
+        .brb-btn {
+            width: 100%; padding: 14px; background: transparent; border: 1px solid rgba(255,205,0,0.4);
+            color: #FFCD00; font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 0.95rem;
+            letter-spacing: 0.2em; cursor: pointer; text-transform: uppercase; transition: all 0.3s;
+            clip-path: polygon(8px 0%, 100% 0%, calc(100% - 8px) 100%, 0% 100%);
+            margin-top: 15px;
+        }
+        .brb-btn.active { background: #FFCD00; color: var(--void); box-shadow: 0 0 24px rgba(255,205,0,0.3); }
+
+        /* PROFILES */
+        .prof-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 15px; }
+        .prof-item { 
+            display: flex; align-items: center; gap: 12px; 
+            padding: 12px; background: rgba(0,0,0,0.3); border: 1px solid var(--border);
+            font-family: 'Rajdhani', sans-serif; font-weight: 600;
+        }
+        .prof-item input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--accent); }
+        
+        #remoteStartPanel { display: none; }
+
+    </style>
+</head>
+<body>
+
+<header>
+    <div class="brand">ZENITH<em>CAM</em></div>
+    <div class="conn-pill">
+        <div class="conn-dot" id="connDot"></div>
+        <span id="connLabel">OFFLINE</span>
+    </div>
+</header>
+
+<!-- REMOTE START PANEL -->
+<div id="remoteStartPanel" class="panel" style="border-left-color: #00E676;">
+    <div class="panel-title" style="color: #00E676;">System Offline</div>
+    <button id="powerOnBtn" class="track-btn power">⚡ REMOTE POWER ON</button>
+</div>
+
+<!-- CONTROL PANEL -->
+<div id="mainControlPanel" class="panel" style="animation-delay:0s;">
+    <div class="panel-title">Engine Control</div>
+    <div class="form-row">
+        <label>AI Model</label>
+        <select id="modelSelect"><option>Awaiting sync...</option></select>
+    </div>
+    <div class="form-row">
+        <label>ROI Display Overlay</label>
+        <div style="display:flex; gap:10px;">
+            <button class="roi-btn" id="roiPreviewBtn">Desktop ROI</button>
+            <button class="roi-btn" id="roiOutputBtn">Stream ROI</button>
+        </div>
+    </div>
+    <button id="trackBtn" class="track-btn">▶ ENGAGE TRACKING</button>
+</div>
+
+<!-- BROADCAST PANEL -->
+<div class="panel">
+    <div class="panel-title">Broadcast (Max 3)</div>
+    <div id="profList" class="prof-list">
+        <div class="prof-item">Loading profiles...</div>
+    </div>
+    <button id="broadcastBtn" class="track-btn broadcast">▶ ENGAGE BROADCAST</button>
+</div>
+
+<!-- PTZ PANEL -->
+<div class="panel">
+    <div class="panel-title">Gimbal & Focus</div>
+    <div class="dpad-wrap">
+        <div class="dpad-row">
+            <div style="width:72px;height:72px;"></div>
+            <div class="ptz-btn" id="btnUp">▲</div>
+            <div style="width:72px;height:72px;"></div>
+        </div>
+        <div class="dpad-row">
+            <div class="ptz-btn" id="btnLeft">◄</div>
+            <div class="ptz-btn center" id="btnStop">STOP</div>
+            <div class="ptz-btn" id="btnRight">►</div>
+        </div>
+        <div class="dpad-row">
+            <div style="width:72px;height:72px;"></div>
+            <div class="ptz-btn" id="btnDown">▼</div>
+            <div style="width:72px;height:72px;"></div>
+        </div>
+    </div>
+    <div class="zoom-row">
+        <button class="zoom-btn" id="btnZoomIn">＋ ZOOM IN</button>
+        <button class="zoom-btn" id="btnZoomOut">－ ZOOM OUT</button>
+    </div>
+    <button id="brbBtn" class="brb-btn">☕ GO BRB</button>
+</div>
+
+<!-- TELEMETRY -->
+<div class="panel">
+    <div class="panel-title">Live Telemetry</div>
+    <div class="telem-grid">
+        <div class="telem-cell">
+            <div class="telem-label">FPS Rate</div>
+            <div class="telem-val" id="valFps">00.0</div>
+        </div>
+        <div class="telem-cell">
+            <div class="telem-label">Targets</div>
+            <div class="telem-val" id="valTargets">0</div>
+        </div>
+        <div class="telem-cell">
+            <div class="telem-label">Gimbal Pan</div>
+            <div class="telem-val" id="valPan">0.00</div>
+        </div>
+        <div class="telem-cell">
+            <div class="telem-label">Gimbal Tilt</div>
+            <div class="telem-val" id="valTilt">0.00</div>
+        </div>
+    </div>
+</div>
+
+<!-- SYSTEM PANEL -->
+<div class="panel" style="border-left-color: var(--danger);">
+    <div class="panel-title" style="color: var(--danger);">System Safety</div>
+    <button id="killBtn" class="track-btn" style="border-color: var(--danger); color: var(--danger);">🛑 REMOTE KILL</button>
+</div>
+
+<script>
+    const socket = io();
+    let isTracking = false;
+    let isBroadcasting = false;
+    let isBrb = false;
+    let pythonAppConnected = false;
+    let profiles = [];
+
+    socket.on('connect', () => {
+        updateConnStatus();
+        socket.emit('command', { action: 'get_state' });
+    });
+
+    socket.on('disconnect', () => {
+        pythonAppConnected = false;
+        updateConnStatus();
+    });
+
+    socket.on('python_status', (data) => {
+        pythonAppConnected = data.active;
+        if (pythonAppConnected) {
+            socket.emit('command', { action: 'get_state' });
+        }
+        updateConnStatus();
+    });
+
+    function updateConnStatus() {
+        const dot = document.getElementById('connDot');
+        const label = document.getElementById('connLabel');
+        const startPanel = document.getElementById('remoteStartPanel');
+        const mainPanel = document.getElementById('mainControlPanel');
+        
+        if (!socket.connected) {
+            dot.className = 'conn-dot';
+            label.textContent = 'OFFLINE';
+            startPanel.style.display = 'none';
+        } else if (!pythonAppConnected) {
+            dot.className = 'conn-dot on';
+            label.textContent = 'BRIDGE';
+            startPanel.style.display = 'block';
+            mainPanel.style.opacity = '0.3';
+            mainPanel.style.pointerEvents = 'none';
+        } else {
+            startPanel.style.display = 'none';
+            mainPanel.style.opacity = '1';
+            mainPanel.style.pointerEvents = 'auto';
+            if (isBroadcasting) {
+                dot.className = 'conn-dot active';
+                label.textContent = 'BROADCASTING';
+            } else if (isTracking) {
+                dot.className = 'conn-dot active';
+                dot.style.animation = 'none';
+                label.textContent = 'TRACKING';
+            } else {
+                dot.className = 'conn-dot on';
+                dot.style.animation = 'none';
+                label.textContent = 'CONNECTED';
+            }
+        }
+    }
+
+    socket.on('telemetry', (data) => {
+        if (data.type === 'state') {
+            updateState(data.state);
+        } else if (data.type === 'update') {
+            updateTelemetry(data);
+            if (!pythonAppConnected) {
+                pythonAppConnected = true;
+                updateConnStatus();
+            }
+        }
+    });
+
+    function updateState(state) {
+        // Models
+        const sel = document.getElementById('modelSelect');
+        if (state.models && state.models.length) {
+            sel.innerHTML = state.models.map(m =>
+                `<option value="${m}">${m.split('/').pop()}</option>`
+            ).join('');
+            if (state.current_model) sel.value = state.current_model;
+        }
+
+        // State sync
+        isTracking = !!state.tracking;
+        isBroadcasting = !!state.streaming;
+        
+        const tBtn = document.getElementById('trackBtn');
+        tBtn.textContent = isTracking ? '⏹ HALT TRACKING' : '▶ ENGAGE TRACKING';
+        tBtn.classList.toggle('active', isTracking);
+
+        const bBtn = document.getElementById('broadcastBtn');
+        bBtn.textContent = isBroadcasting ? '⏹ STOP BROADCAST' : '▶ ENGAGE BROADCAST';
+        bBtn.classList.toggle('active', isBroadcasting);
+        
+        // ROI Toggles
+        document.getElementById('roiPreviewBtn').classList.toggle('active', !!state.draw_preview_roi);
+        document.getElementById('roiOutputBtn').classList.toggle('active', !!state.draw_output_roi);
+
+        // Profiles
+        if (state.profiles) {
+            profiles = state.profiles;
+            const pList = document.getElementById('profList');
+            pList.innerHTML = profiles.map((p, idx) => `
+                <div class="prof-item">
+                    <input type="checkbox" id="prof_${idx}" value="${idx}">
+                    <label for="prof_${idx}">${p.name} (${p.site})</label>
+                </div>
+            `).join('');
+        }
+
+        // BRB
+        isBrb = !!state.brb;
+        const brbBtn = document.getElementById('brbBtn');
+        brbBtn.textContent = isBrb ? '▶ BACK LIVE' : '☕ GO BRB';
+        brbBtn.classList.toggle('active', isBrb);
+
+        updateConnStatus();
+    }
+
+    function updateTelemetry(data) {
+        const fpsEl = document.getElementById('valFps');
+        fpsEl.textContent = (+data.fps).toFixed(1);
+        fpsEl.className = 'telem-val' + (data.fps < 15 ? ' danger' : data.fps < 24 ? ' warn' : '');
+        document.getElementById('valTargets').textContent = data.targets ?? 0;
+        document.getElementById('valPan').textContent = (+data.pan).toFixed(2);
+        document.getElementById('valTilt').textContent = (+data.tilt).toFixed(2);
+    }
+
+    // Power On
+    document.getElementById('powerOnBtn').addEventListener('click', () => {
+        socket.emit('command', { action: 'start_app' });
+    });
+
+    // Tracking toggle
+    document.getElementById('trackBtn').addEventListener('click', () => {
+        isTracking = !isTracking;
+        socket.emit('command', { action: 'toggle', value: isTracking });
+        updateConnStatus();
+    });
+
+    // Broadcast toggle
+    document.getElementById('broadcastBtn').addEventListener('click', () => {
+        if (isBroadcasting) {
+            socket.emit('command', { action: 'broadcast_toggle', value: [] });
+        } else {
+            const selected = [];
+            document.querySelectorAll('#profList input[type="checkbox"]:checked').forEach(cb => {
+                selected.push(parseInt(cb.value));
+            });
+            if (selected.length === 0) {
+                alert("Please select at least one profile.");
+                return;
+            }
+            socket.emit('command', { action: 'broadcast_toggle', value: selected });
+        }
+    });
+
+    // ROI
+    document.getElementById('roiPreviewBtn').addEventListener('click', () => {
+        const active = !document.getElementById('roiPreviewBtn').classList.contains('active');
+        socket.emit('command', { action: 'roi_toggle', target: 'preview', value: active });
+    });
+    document.getElementById('roiOutputBtn').addEventListener('click', () => {
+        const active = !document.getElementById('roiOutputBtn').classList.contains('active');
+        socket.emit('command', { action: 'roi_toggle', target: 'output', value: active });
+    });
+
+    // Model change
+    document.getElementById('modelSelect').addEventListener('change', e => {
+        socket.emit('command', { action: 'set_model', value: e.target.value });
+    });
+
+    // BRB
+    document.getElementById('brbBtn').addEventListener('click', () => {
+        isBrb = !isBrb;
+        socket.emit('command', { action: 'brb_toggle', value: isBrb });
+    });
+
+    // Remote Kill
+    document.getElementById('killBtn').addEventListener('click', () => {
+        if (confirm("⚠️ SHUT DOWN ZENITHCAM REMOTELY?\nThis will close the app and stop all processing.")) {
+            socket.emit('command', { action: 'shutdown' });
+        }
+    });
+
+    // PTZ D-Pad
+    function ptzStart(pan, tilt) {
+        socket.emit('command', { action: 'ptz_move', value: { pan, tilt } });
+    }
+    function ptzStop() {
+        socket.emit('command', { action: 'ptz_stop' });
+    }
+    function ptzZoom(dir) {
+        socket.emit('command', { action: 'ptz_zoom', value: dir });
+    }
+
+    function bindPtz(id, pan, tilt) {
+        const el = document.getElementById(id);
+        el.addEventListener('pointerdown', e => { e.preventDefault(); el.classList.add('pressing'); ptzStart(pan, tilt); });
+        el.addEventListener('pointerup',   e => { el.classList.remove('pressing'); ptzStop(); });
+        el.addEventListener('pointerleave',e => { el.classList.remove('pressing'); ptzStop(); });
+    }
+
+    bindPtz('btnUp',    0,  0.5);
+    bindPtz('btnDown',  0, -0.5);
+    bindPtz('btnLeft', -0.5, 0);
+    bindPtz('btnRight', 0.5, 0);
+
+    document.getElementById('btnStop').addEventListener('click', ptzStop);
+
+    const zmIn  = document.getElementById('btnZoomIn');
+    const zmOut = document.getElementById('btnZoomOut');
+    zmIn.addEventListener('pointerdown',  e => { e.preventDefault(); ptzZoom(1); });
+    zmIn.addEventListener('pointerup',    () => ptzStop());
+    zmOut.addEventListener('pointerdown', e => { e.preventDefault(); ptzZoom(-1); });
+    zmOut.addEventListener('pointerup',   () => ptzStop());
+</script>
+</body>
+</html>

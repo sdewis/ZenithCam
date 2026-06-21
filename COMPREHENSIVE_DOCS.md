@@ -45,6 +45,14 @@ The interface has been completely rebuilt to act as a **Modular Workspace** foll
     - **Fast/WiFi (3000 kbps)**: Stabilizes streams on wireless connections.
     - **Medium (4500 kbps)**: Standard quality.
     - **High/Ethernet (6000 kbps)**: Maximum CBR 720p/1080p quality.
+    - **Action-Aware QoS (Auto)**: Dynamically scales FFmpeg bitrate up to 8000kbps when YOLO detects high-motion (`make_love` class) and drops it during static scenes to conserve bandwidth.
+
+#### 🎙️ **Audio-Visual Sensor Fusion**
+- **OBSBOT DOA Integration**: By tapping into the OBSBOT SDK's `doa_set` (Direction of Arrival) microphone array struct, ZenithCam's PTZ controller calculates sound origin vectors.
+- **Out-of-Frame Tracking**: If a subject moves too fast and escapes the YOLO bounding box, the Kalman filter seamlessly falls back to audio vectors, steering the camera toward the sound until the subject is visually re-acquired.
+
+#### 🛡️ **Engine Stability**
+- **Deterministic FSM**: Utilizes a strict PyQt6 `QState` machine ensuring 100% crash-free teardowns, fully resolving the `v4l2loopback` [Errno 22] locking bugs and thread synchronization faults.
 
 #### 🤖 **AI Auto-Focus & Privacy**
 - **YOLO Detection**: Real-time identification of actions and private parts.

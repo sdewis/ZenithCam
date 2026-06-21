@@ -1,8 +1,0 @@
-/home/sean/CodeFolder/ZenithCam_SDK_Integrated/sdk/OBSBOT_Sample/build/CMakeFiles/OBSBOT_Sample.dir
-/home/sean/CodeFolder/ZenithCam_SDK_Integrated/sdk/OBSBOT_Sample/build/CMakeFiles/obsbot_bridge.dir
-/home/sean/CodeFolder/ZenithCam_SDK_Integrated/sdk/OBSBOT_Sample/build/CMakeFiles/edit_cache.dir
-/home/sean/CodeFolder/ZenithCam_SDK_Integrated/sdk/OBSBOT_Sample/build/CMakeFiles/rebuild_cache.dir
-/home/sean/CodeFolder/ZenithCam_SDK_Integrated/sdk/OBSBOT_Sample/build/CMakeFiles/list_install_components.dir
-/home/sean/CodeFolder/ZenithCam_SDK_Integrated/sdk/OBSBOT_Sample/build/CMakeFiles/install.dir
-/home/sean/CodeFolder/ZenithCam_SDK_Integrated/sdk/OBSBOT_Sample/build/CMakeFiles/install/local.dir
-/home/sean/CodeFolder/ZenithCam_SDK_Integrated/sdk/OBSBOT_Sample/build/CMakeFiles/install/strip.dir

@@ -1,14 +1,14 @@
 [
     {
-        "name": "XHam",
-        "site": "XHamster Live",
-        "url": "rtmp://live.doppiocdn.com/ext",
-        "key": "117990251?token=8c7a5b81e2d841bc3f66ab8e7c410f4c"
-    },
-    {
         "name": "Stripchat",
         "site": "ST",
         "url": "rtmp://live.doppiocdn.com/ext",
         "key": "111168513?token=09e248de972b39b030e97eb4ed34ddb3"
+    },
+    {
+        "name": "Camsoda",
+        "site": "Camsoda.com",
+        "url": "luvcockmilkin-flu?token=eyJpdiI6ImhabzlvMEN1c1UvWUFZR1ViTFRHbXc9PSIsInZhbHVlIjoidkRKc0hyNlBycXJvOTB6NklNekE4cUdCVVpGZUdLcTlaZE8yWXpDQ2VOYz0iLCJtYWMiOiJlYmE1YzUzMGY5MjRhMjM3ZjEyMjBiMTgwZTYyYWJjMDQxZjliNjBhZDNmMjNjM2Q1ODA1ZDYzYjQ2ZGM1Y2ZhIiwidGFnIjoiIn0=",
+        "key": "luvcockmilkin-flu?token=eyJpdiI6ImhabzlvMEN1c1UvWUFZR1ViTFRHbXc9PSIsInZhbHVlIjoidkRKc0hyNlBycXJvOTB6NklNekE4cUdCVVpGZUdLcTlaZE8yWXpDQ2VOYz0iLCJtYWMiOiJlYmE1YzUzMGY5MjRhMjM3ZjEyMjBiMTgwZTYyYWJjMDQxZjliNjBhZDNmMjNjM2Q1ODA1ZDYzYjQ2ZGM1Y2ZhIiwidGFnIjoiIn0="
     }
 ]
